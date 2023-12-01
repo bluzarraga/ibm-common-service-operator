@@ -41,7 +41,7 @@ func (r *CommonServiceReconciler) getNewConfigs(cs *unstructured.Unstructured) (
 
 	// Update storageclass in OperandConfig
 	if cs.Object["spec"].(map[string]interface{})["storageClass"] != nil {
-		klog.Info("Applying storageClass configuration")
+		klog.Info("Applying storageClass configurationfrom CS CR: %s", cs.Object["metadata"].["name"])
 		storageConfig, err := convertStringToSlice(strings.ReplaceAll(constant.StorageClassTemplate, "placeholder", cs.Object["spec"].(map[string]interface{})["storageClass"].(string)))
 		if err != nil {
 			return nil, nil, err
@@ -105,7 +105,7 @@ func (r *CommonServiceReconciler) getNewConfigs(cs *unstructured.Unstructured) (
 		}
 	}
 
-	klog.Info("Applying size configuration")
+	klog.Info("Applying size configurationfrom CS CR: %s", cs.Object["metadata"].["name"])
 	var sizeConfigs []interface{}
 	serviceControllerMapping := make(map[string]string)
 	serviceControllerMapping["profileController"] = "default"
