@@ -263,6 +263,7 @@ func (r *CommonServiceReconciler) ReconcileMasterCR(ctx context.Context, instanc
 	// Create Event if there is no update in OperandConfig after applying current CR
 	if isEqual {
 		r.Recorder.Event(instance, corev1.EventTypeNormal, "Noeffect", fmt.Sprintf("No update, resource sizings in the OperandConfig %s/%s are larger than the profile from CommonService CR %s/%s", r.Bootstrap.CSData.OperatorNs, "common-service", instance.Namespace, instance.Name))
+		klog.Info("operandconfig marked as equal from %s, not changing", instance.Name)
 	}
 
 	if err := r.Bootstrap.PropagateDefaultCR(instance); err != nil {
@@ -356,6 +357,7 @@ func (r *CommonServiceReconciler) ReconcileGeneralCR(ctx context.Context, instan
 	// Create Event if there is no update in OperandConfig after applying current CR
 	if isEqual {
 		r.Recorder.Event(instance, corev1.EventTypeNormal, "Noeffect", fmt.Sprintf("No update, resource sizings in the OperandConfig %s/%s are larger than the profile from CommonService CR %s/%s", r.Bootstrap.CSData.OperatorNs, "common-service", instance.Namespace, instance.Name))
+		klog.Info("operandconfig marked as equal from %s, not changing", instance.Name)
 	}
 
 	if err := r.updatePhase(ctx, instance, CRSucceeded); err != nil {

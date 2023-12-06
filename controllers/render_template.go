@@ -105,7 +105,7 @@ func (r *CommonServiceReconciler) getNewConfigs(cs *unstructured.Unstructured) (
 		}
 	}
 
-	klog.Info("Applying size configurationfrom CS CR: %s", cs.Object["metadata"].["name"])
+	klog.Info("Applying size configuration from CS CR: %s", cs.Object["metadata"].["name"])
 	var sizeConfigs []interface{}
 	serviceControllerMapping := make(map[string]string)
 	serviceControllerMapping["profileController"] = "default"
