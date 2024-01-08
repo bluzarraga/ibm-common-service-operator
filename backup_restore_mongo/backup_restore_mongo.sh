@@ -27,7 +27,7 @@ TARGET_NAMESPACE=
 backup="false"
 restore="false"
 cleanup="false"
-s390x_ENV="false"
+z_or_power_ENV="false"
 DEBUG=0
 
 # script base directory
@@ -132,8 +132,8 @@ function prereq() {
 
     mongo_node=$(${OC} get pods -n $ORIGINAL_NAMESPACE -o wide | grep icp-mongodb-0 | awk '{print $7}')
     architecture=$(${OC} describe node $mongo_node | grep "Architecture:" | awk '{print $2}')
-    if [[ $architecture == "s390x" ]]; then
-      s390x_ENV="true"
+    if [[ $architecture == "s390x" ]] || [[ $architecture == "ppc64le" ]]; then
+      z_or_power_ENV="true"
       info "Z cluster detected, be prepared for multiple restarts of mongo pods. This is expected behavior."
       mongo_op_scaled_original=$(${OC} get deploy -n $ORIGINAL_NAMESPACE | grep ibm-mongodb-operator | egrep '1/1' || echo false)
       if [[ $mongo_op_scaled_original == "false" ]]; then
@@ -178,7 +178,7 @@ function prep_backup() {
     #TODO add clarifying messages and check response code to make more transparent
     #backup files
     info "Checking for necessary backup files..."
-    if [[ $s390x_ENV == "false" ]]; then
+    if [[ $z_or_power_ENV == "false" ]]; then
         if [[ -f "mongodbbackup.yaml" ]]; then
             info "mongodbbackup.yaml already present"
         else
@@ -211,7 +211,7 @@ function backup() {
     export ibm_mongodb_image=$(${OC} get pod icp-mongodb-0 -n $ORIGINAL_NAMESPACE -o=jsonpath='{range .spec.containers[0]}{.image}{end}')
     local pvx=$(${OC} get pv | grep mongodbdir | awk 'FNR==1 {print $1}')
     local storageClassName=$("${OC}" get pv -o yaml ${pvx} | yq '.spec.storageClassName' | awk '{print}')
-    if [[ $s390x_ENV == "true" ]]; then
+    if [[ $z_or_power_ENV == "true" ]]; then
         info "Z cluster detected"
         info "Scaling down MongoDB operator"
         ${OC} scale deploy -n $ORIGINAL_NAMESPACE ibm-mongodb-operator --replicas=0
@@ -256,7 +256,7 @@ EOF
         delete_mongo_pods "$ORIGINAL_NAMESPACE"
     fi
     chmod +x mongo-backup.sh
-    ./mongo-backup.sh "$storageClassName" "$s390x_ENV"
+    ./mongo-backup.sh "$storageClassName" "$z_or_power_ENV"
 
     local jobPod=$(${OC} get pods -n $ORIGINAL_NAMESPACE | grep mongodb-backup | awk '{ print $1 }')
     local fileName="backup_from_${ORIGINAL_NAMESPACE}_for_${TARGET_NAMESPACE}.log"
@@ -283,7 +283,7 @@ EOF
             info "Backup PVC cs-mongodump successfully bound to persistent volume provisioned by $storageClassName storage class."
         fi
     fi
-    if [[ $s390x_ENV == "true" ]]; then
+    if [[ $z_or_power_ENV == "true" ]]; then
         #reset changes for z environment
         info "Reverting change to icp-mongodb configmap" 
         delete_mongo_pods "$ORIGINAL_NAMESPACE"
@@ -300,7 +300,7 @@ function prep_restore() {
     
     #Restore files
     info "Checking for necessary restore files..."
-    if [[ $s390x_ENV == "false" ]]; then
+    if [[ $z_or_power_ENV == "false" ]]; then
         if [[ -f "mongodbrestore.yaml" ]]; then
             info "mongodbrestore.yaml already present"
         else
@@ -419,7 +419,7 @@ function restore () {
     #restore script is setup to look for CS_NAMESPACE and is used in other backup/restore processes unrelated to this script
     export CS_NAMESPACE=$TARGET_NAMESPACE
     export ibm_mongodb_image=$(${OC} get pod icp-mongodb-0 -n $ORIGINAL_NAMESPACE -o=jsonpath='{range .spec.containers[0]}{.image}{end}')
-    if [[ $s390x_ENV == "true" ]]; then
+    if [[ $z_or_power_ENV == "true" ]]; then
         info "Z cluster detected"
         info "Scaling down MongoDB operator"
         ${OC} scale deploy -n $TARGET_NAMESPACE ibm-mongodb-operator --replicas=0
@@ -466,13 +466,13 @@ EOF
         delete_mongo_pods "$TARGET_NAMESPACE"
     fi
     chmod +x mongo-restore.sh
-    ./mongo-restore.sh "$ORIGINAL_NAMESPACE" "$s390x_ENV"
+    ./mongo-restore.sh "$ORIGINAL_NAMESPACE" "$z_or_power_ENV"
 
     local jobPod=$(${OC} get pods -n $TARGET_NAMESPACE | grep mongodb-restore | awk '{ print $1 }')
     local fileName="restore_to_${TARGET_NAMESPACE}_from_${ORIGINAL_NAMESPACE}.log"
     ${OC} logs $jobPod -n $TARGET_NAMESPACE > $fileName
     info "Restore logs can be found in $fileName. Job pod will be cleaned up."
-    if [[ $s390x_ENV == "true" ]]; then
+    if [[ $z_or_power_ENV == "true" ]]; then
         #reset changes for z environment
         info "Reverting change to icp-mongodb configmap" 
         delete_mongo_pods "$TARGET_NAMESPACE"
