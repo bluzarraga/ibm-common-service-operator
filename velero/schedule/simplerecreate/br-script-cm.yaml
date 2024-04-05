@@ -34,7 +34,6 @@ data:
             success "Backup completed successfully."
         elif [[ $MODE == "restore" ]]; then
             info "Mode is set to restore, beginning restore process."
-            wait_for_keycloak
             restore
             success "Restore completed successfully."
         else
