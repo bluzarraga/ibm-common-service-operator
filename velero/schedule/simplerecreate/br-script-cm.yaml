@@ -1,0 +1,85 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: simple-recreate-br-configmap
+  namespace: <simple-recreate namespace>
+  labels:
+    foundationservices.cloudpak.ibm.com: simple-recreate-data
+data:
+  br_simple-recreate.sh: |
+    #!/usr/bin/env bash
+
+    # Licensed Materials - Property of IBM
+    # Copyright IBM Corporation 2023. All Rights Reserved
+    # US Government Users Restricted Rights -
+    # Use, duplication or disclosure restricted by GSA ADP Schedule Contract with IBM Corp.
+    #
+    # This is an internal component, bundled with an official IBM product.
+    # Please refer to that particular license for additional information.
+
+    # ---------- Command arguments ----------
+
+    set -o errtrace
+    set -o errexit
+
+    MODE=$1
+    KEYCLOAK_NAMESPACE=$2
+
+    BACKUP_DIR=/simple-recreate/simple-recreate-backup
+
+    function main {
+        if [[ $MODE == "backup" ]]; then
+            info "Mode set to backup, beginning backup process."
+            backup
+            success "Backup completed successfully."
+        elif [[ $MODE == "restore" ]]; then
+            info "Mode is set to restore, beginning restore process."
+            wait_for_keycloak
+            restore
+            success "Restore completed successfully."
+        else
+            error "Mode selected is $MODE. Please use either \"backup\" or \"restore\"."
+        fi
+    }
+
+    function backup {
+        mkdir -p $BACKUP_DIR/database
+        mkdir -p $BACKUP_DIR/secrets
+        oc get pods -n $KEYCLOAK_NAMESPACE -o yaml > $BACKUP_DIR/database/testoutput.yaml
+
+        #backup cs-keycloak-initial-admin secret
+        oc get deployments -n $KEYCLOAK_NAMESPACE -o yaml > $BACKUP_DIR/secrets/testoutput.yaml
+    }
+    
+    function restore {
+        info "attempt oc commands"
+        oc get pods -n $KEYCLOAK_NAMESPACE
+        oc get secrets -n $KEYCLOAK_NAMESPACE
+    }
+
+    function msg() {
+        printf '%b\n' "$1"
+    }
+
+    function success() {
+        msg "\33[32m[✔] ${1}\33[0m"
+    }
+
+    function warning() {
+        msg "\33[33m[✗] ${1}\33[0m"
+    }
+
+    function error() {
+        msg "\33[31m[✘] ${1}\33[0m"
+        exit 1
+    }
+
+    function title() {
+        msg "\33[34m# ${1}\33[0m"
+    }
+
+    function info() {
+        msg "[INFO] ${1}"
+    }
+
+    main $*

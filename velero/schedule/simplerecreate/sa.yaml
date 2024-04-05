@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: simple-recreate-backup-sa
+  namespace: <simple-recreate namespace>
+  labels:
+    foundationservices.cloudpak.ibm.com: simple-recreate-data

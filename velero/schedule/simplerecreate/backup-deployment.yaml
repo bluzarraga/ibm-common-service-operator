@@ -1,0 +1,64 @@
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: simple-recreate-backup
+  namespace: <simple-recreate namespace>
+spec:
+  selector:
+    matchLabels:
+      foundationservices.cloudpak.ibm.com: simple-recreate-data
+  template:
+    metadata:
+      annotations:
+        backup.velero.io/backup-volumes: simple-recreate-backup
+        pre.hook.backup.velero.io/command: '["sh", "-c", "/simple-recreate/br_simple-recreate.sh backup <simple-recreate namespace>"]'
+        pre.hook.backup.velero.io/timeout: 300s
+        post.hook.backup.velero.io/command: '["sh", "-c", "rm -rf /simple-recreate/simple-recreate-backup/database && rm -rf /simple-recreate/simple-recreate-backup/secrets"]'
+        post.hook.restore.velero.io/command: '["sh", "-c", "/simple-recreate/br_simple-recreate.sh restore <simple-recreate namespace>"]'
+        post.hook.restore.velero.io/wait-timeout: 300s
+        post.hook.restore.velero.io/exec-timeout: 300s
+        post.hook.restore.velero.io/timeout: 720s
+      name: simple-recreate-backup
+      namespace: <simple-recreate namespace>
+      labels:
+        foundationservices.cloudpak.ibm.com: simple-recreate-data
+    spec:
+        containers:
+        - command:
+          - sh
+          - -c
+          - sleep infinity
+          image: quay.io/luzarragaben/simplerecreate-test-image:test
+          imagePullPolicy: IfNotPresent
+          name: simple-recreate-br
+          resources:
+            limits:
+              cpu: 500m
+              ephemeral-storage: 512Mi
+              memory: 512Mi
+            requests:
+              cpu: 200m
+              ephemeral-storage: 128Mi
+              memory: 256Mi
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+          - mountPath: /simple-recreate/simple-recreate-backup
+            name: simple-recreate-backup-mount
+          - name: scripts
+            mountPath: "/simple-recreate"
+        dnsPolicy: ClusterFirst
+        schedulerName: default-scheduler
+        securityContext:
+          runAsNonRoot: true
+        serviceAccount: simple-recreate-backup-sa
+        serviceAccountName: simple-recreate-backup-sa
+        terminationGracePeriodSeconds: 30
+        volumes:
+        - name: simple-recreate-backup-mount
+          persistentVolumeClaim:
+            claimName: simple-recreate-backup-pvc
+        - name: scripts
+          configMap:
+            name: simple-recreate-br-configmap
+            defaultMode: 0777
