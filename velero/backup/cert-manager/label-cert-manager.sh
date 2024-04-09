@@ -32,7 +32,7 @@ do
 done
 
 # Get all certificates in all namespaces and add foundationservices.cloudpak.ibm.com=cert-manager
-CURRENT_CERTIFICATES=($(oc get certificates --all-namespaces -o custom-columns=NAME:.metadata.name,NAMESPACE:metadata.namespace --no-headers=True))
+CURRENT_CERTIFICATES=($(oc get certificates --all-namespaces -o custom-columns=NAME:.metadata.name,NAMESPACE:metadata.namespace --no-headers=True | grep -v "iaf-system-automationui-aui-zen-cert\|iaf-system-elasticsearch-es-client-cert"))
 i=0
 len=${#CURRENT_CERTIFICATES[@]}
 while [ $i -lt $len ];
@@ -47,7 +47,7 @@ do
     oc label certificates $NAME -n $NAMESPACE foundationservices.cloudpak.ibm.com=cert-manager --overwrite=true
 done
 
-CURRENT_CERTIFICATES=($(oc get certificates.cert-manager.io --all-namespaces -o custom-columns=NAME:.metadata.name,NAMESPACE:metadata.namespace --no-headers=True))
+CURRENT_CERTIFICATES=($(oc get certificates.cert-manager.io --all-namespaces -o custom-columns=NAME:.metadata.name,NAMESPACE:metadata.namespace --no-headers=True | grep -v "iaf-system-automationui-aui-zen-cert\|iaf-system-elasticsearch-es-client-cert"))
 i=0
 len=${#CURRENT_CERTIFICATES[@]}
 while [ $i -lt $len ];
@@ -63,7 +63,7 @@ do
 done
 
 # Get all secrets with label operator.ibm.com/watched-by-cert-manager="" and add foundationservices.cloudpak.ibm.com=cert-manager
-CURRENT_SECRETS=($(oc get secrets -l operator.ibm.com/watched-by-cert-manager="" --all-namespaces -o custom-columns=NAME:.metadata.name,NAMESPACE:metadata.namespace --no-headers=True))
+CURRENT_SECRETS=($(oc get secrets -l operator.ibm.com/watched-by-cert-manager="" --all-namespaces -o custom-columns=NAME:.metadata.name,NAMESPACE:metadata.namespace --no-headers=True | grep -v "iaf-system-automationui-aui-zen-cert\|iaf-system-elasticsearch-es-client-cert-kp"))
 i=0
 len=${#CURRENT_SECRETS[@]}
 while [ $i -lt $len ];
