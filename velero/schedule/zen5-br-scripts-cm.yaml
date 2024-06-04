@@ -435,6 +435,7 @@ data:
         fi
         if [[ $BACKUP == "true" ]]; then
             extension_check=$(oc get zenextension -n $ZEN_NAMESPACE -o name | grep -v "common-web-ui-zen-extension\|zen-watchdog-frontdoor-extension" || echo "empty")
+            mkdir /zen5/extensions
             if [[ $extension_check != "empty" ]]; then
                 extensions=""
                 for ext in $extension_check
