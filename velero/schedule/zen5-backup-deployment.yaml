@@ -43,6 +43,16 @@ spec:
             memory: 256Mi
         terminationMessagePath: /dev/termination-log
         terminationMessagePolicy: File
+        securityContext:
+          capabilities:
+            drop:
+              - ALL
+          privileged: false
+          runAsNonRoot: true
+          runAsUser: <fsGroup>
+          runAsGroup: <fsGroup>
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
         volumeMounts:
         - mountPath: /zen5/zen-backup
           name: zen5-backup-mount
@@ -56,16 +66,7 @@ spec:
       dnsPolicy: ClusterFirst
       schedulerName: default-scheduler
       securityContext:
-        capabilities:
-          drop:
-            - ALL
-        privileged: false
-        runAsNonRoot: true
-        runAsUser: <fsGroup>
-        runAsGroup: <fsGroup>
         fsGroup: <fsGroup>
-        allowPrivilegeEscalation: false
-        readOnlyRootFilesystem: false
       serviceAccount: zen5-backup-sa
       serviceAccountName: zen5-backup-sa
       terminationGracePeriodSeconds: 30

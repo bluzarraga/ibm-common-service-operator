@@ -32,6 +32,16 @@ spec:
         - sleep infinity
         image: icr.io/cpopen/cpfs/cpfs-utils:4.6.0 #4.1.0 if using CS 4.1, 4.2.0 if using CS 4.2
         imagePullPolicy: IfNotPresent
+        securityContext:
+          capabilities:
+            drop:
+              - ALL
+          privileged: false
+          runAsNonRoot: true
+          runAsUser: <fsGroup>
+          fsGroup: <fsGroup>
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
         name: cs-db-br
         resources:
           limits:
@@ -54,15 +64,7 @@ spec:
       dnsPolicy: ClusterFirst
       schedulerName: default-scheduler
       securityContext:
-        capabilities:
-          drop:
-            - ALL
-        privileged: false
-        runAsNonRoot: true
-        runAsUser: <fsGroup>
         fsGroup: <fsGroup>
-        allowPrivilegeEscalation: false
-        readOnlyRootFilesystem: false
       serviceAccount: cs-db-backup-sa
       serviceAccountName: cs-db-backup-sa
       terminationGracePeriodSeconds: 30
