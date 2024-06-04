@@ -24,6 +24,8 @@ spec:
       labels:
         foundationservices.cloudpak.ibm.com: zen5-data
     spec:
+        securityContext:
+          fsGroup: <fsGroup>
         containers:
         - command:
           - sh
@@ -59,7 +61,7 @@ spec:
               - ALL
           privileged: false
           runAsNonRoot: true
-          runAsUser: 1001
+          runAsUser: <fsGroup>
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: false
         serviceAccount: zen5-backup-sa

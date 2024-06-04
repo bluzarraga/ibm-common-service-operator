@@ -111,10 +111,13 @@ function deploy_resources(){
     info "Using specified storage class $STORAGE_CLASS."
   fi
 
+  fsgroup=$(oc get project $TARGET_NAMESPACE -o=jsonpath='{.metadata.annotations.openshift\.io/sa\.scc\.uid-range}' | tr "\/" " " | awk '{print $1}')
+
   #deploy IM EDB resources
   if [[ $IM == "true" ]]; then
     info "Creating IM Backup/Restore resources in namespace $TARGET_NAMESPACE."
     sed -i -E "s/<cs-db namespace>/$TARGET_NAMESPACE/" common-service-db/cs-db-backup-deployment.yaml
+    sed -i -E "s/<fsGroup>/$fsgroup/" common-service-db/cs-db-backup-deployment.yaml
     sed -i -E "s/<cs-db namespace>/$TARGET_NAMESPACE/" common-service-db/cs-db-backup-pvc.yaml
     sed -i -E "s/<storage class>/$STORAGE_CLASS/" common-service-db/cs-db-backup-pvc.yaml
     sed -i -E "s/<cs-db namespace>/$TARGET_NAMESPACE/" common-service-db/cs-db-role.yaml
@@ -162,6 +165,7 @@ function deploy_resources(){
         info "Creating Zen Backup/Restore resources in namespace $TARGET_NAMESPACE."
         sed -i -E "s/<zenservice namespace>/$TARGET_NAMESPACE/" zen5-backup-deployment.yaml
         sed -i -E "s/<zenservice name>/$ZENSERVICE/" zen5-backup-deployment.yaml
+        sed -i -E "s/<fsGroup>/$fsgroup/" zen5-backup-deployment.yaml
         sed -i -E "s/<zenservice namespace>/$TARGET_NAMESPACE/" zen5-backup-pvc.yaml
         sed -i -E "s/<storage class>/$STORAGE_CLASS/" zen5-backup-pvc.yaml
         sed -i -E "s/<zenservice namespace>/$TARGET_NAMESPACE/" zen5-role.yaml
@@ -211,6 +215,7 @@ function cleanup() {
       oc delete pod $pod -n $TARGET_NAMESPACE --ignore-not-found || warning "IM backup pod not found, moving on."
     fi
     oc delete pvc cs-db-backup-pvc -n $TARGET_NAMESPACE --ignore-not-found
+    oc delete cm cs-db-br-configmap -n $TARGET_NAMESPACE --ignore-not-found
     success "IM BR resources cleaned up."
   fi
 
@@ -222,7 +227,7 @@ function cleanup() {
     if [[ $pod != "" ]]; then
       oc delete pod $pod -n $TARGET_NAMESPACE --ignore-not-found || warning "IM backup pod not found, moving on."
     fi
-    oc delete pvc cs-db-backup-pvc -n $TARGET_NAMESPACE --ignore-not-found
+    oc delete pvc cs-mongodump -n $TARGET_NAMESPACE --ignore-not-found
     success "IM BR resources cleaned up."
   fi
 
@@ -235,6 +240,7 @@ function cleanup() {
       oc delete pod $pod -n $TARGET_NAMESPACE --ignore-not-found || warning "Keycloak backup pod not found, moving on."
     fi
     oc delete pvc keycloak-backup-pvc -n $TARGET_NAMESPACE --ignore-not-found
+    oc delete cm keycloak-br-configmap -n $TARGET_NAMESPACE --ignore-not-found
     success "IM Mongo BR resources cleaned up."
   fi
 
@@ -247,6 +253,7 @@ function cleanup() {
       oc delete pod $pod -n $TARGET_NAMESPACE --ignore-not-found || warning "Zen backup pod not found, moving on."
     fi
     oc delete pvc zen5-backup-pvc -n $TARGET_NAMESPACE --ignore-not-found
+    oc delete cm zen5-br-configmap -n $TARGET_NAMESPACE --ignore-not-found
     success "Zen BR resources cleaned up."
   fi
 
@@ -259,6 +266,7 @@ function cleanup() {
       oc delete pod $pod -n $TARGET_NAMESPACE --ignore-not-found || warning "Zen 4 backup pod not found, moving on."
     fi
     oc delete pvc zen4-backup-pvc -n $TARGET_NAMESPACE --ignore-not-found
+    oc delete cm zen4-br-configmap -n $TARGET_NAMESPACE --ignore-not-found
     success "Zen 4 BR resources cleaned up."
   fi
   
