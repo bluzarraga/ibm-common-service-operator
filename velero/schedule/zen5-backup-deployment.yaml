@@ -61,9 +61,9 @@ spec:
             - ALL
         privileged: false
         runAsNonRoot: true
-        runAsUser: 1001
-        runAsGroup: 1001
-        fsGroup: 1001
+        runAsUser: <fsGroup>
+        runAsGroup: <fsGroup>
+        fsGroup: <fsGroup>
         allowPrivilegeEscalation: false
         readOnlyRootFilesystem: false
       serviceAccount: zen5-backup-sa
