@@ -48,14 +48,20 @@ spec:
             name: zen5-backup-mount
           - name: scripts
             mountPath: "/zen5"
-          - name: ext
-            mountPath: /zen5/extensions
+            subPath: extensions
           - name: logs
             mountPath: /zen5/zen-backup/logs
         dnsPolicy: ClusterFirst
         schedulerName: default-scheduler
         securityContext:
+          capabilities:
+            drop:
+              - ALL
+          privileged: false
           runAsNonRoot: true
+          runAsUser: 1001
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
         serviceAccount: zen5-backup-sa
         serviceAccountName: zen5-backup-sa
         terminationGracePeriodSeconds: 30
@@ -67,7 +73,5 @@ spec:
           configMap:
             name: zen5-br-configmap
             defaultMode: 0777
-        - emptyDir: {}
-          name: ext
         - emptyDir: {}
           name: logs
