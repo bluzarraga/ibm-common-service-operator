@@ -435,7 +435,6 @@ data:
         fi
         if [[ $BACKUP == "true" ]]; then
             extension_check=$(oc get zenextension -n $ZEN_NAMESPACE -o name | grep -v "common-web-ui-zen-extension\|zen-watchdog-frontdoor-extension" || echo "empty")
-            mkdir /zen5/extensions
             if [[ $extension_check != "empty" ]]; then
                 extensions=""
                 for ext in $extension_check
@@ -451,17 +450,17 @@ data:
                 extensions=$(echo $extensions | tr "," " ")
                 echo $extensions
                 
-                cat <<< $extensions > /zen5/extensions/extensions.txt
+                cat <<< $extensions > /zen5/zen-backup/extensions.txt
                 success "Extensions captured for backup:"
-                cat /zen5/extensions/extensions.txt
+                cat /zen5/zen-backup/extensions.txt
             else
                 info "No extensions found in namespace $ZEN_NAMESPACE other than defaults, exiting."
             fi
         fi
         
         if [[ $BACKUP == "false" ]]; then
-            if [[ -f /zen5/extensions/extensions.txt ]]; then
-                extensions=$(cat /zen5/extensions/extensions.txt)
+            if [[ -f /zen5/zen-backup/extensions.txt ]]; then
+                extensions=$(cat /zen5/zen-backup/extensions.txt)
                 echo $extensions
                 extensions=$(echo $extensions | tr " " ",")
                 info "Extensions to cleanup in namespace $ZEN_NAMESPACE: $extensions"
@@ -488,7 +487,7 @@ data:
                     success "Zen extension cleanup complete."
                 fi
             else
-                info "File /zen5/extensions/extensions.txt not found, skipping zenextension cleanup."
+                info "File /zen5/zen-backup/extensions.txt not found, skipping zenextension cleanup."
             fi
         fi
     }
