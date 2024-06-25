@@ -8,6 +8,8 @@
 # This is an internal component, bundled with an official IBM product.
 # Please refer to that particular license for additional information.
 
+set -o nounset
+
 # ---------- Command arguments ----------
 
 OC=oc
@@ -15,7 +17,7 @@ YQ=yq
 ENABLE_LICENSING=0
 MINIMAL_RBAC_ENABLED=0
 MINIMAL_RBAC=""
-CHANNEL="v4.3"
+CHANNEL="v4.6"
 MAINTAINED_CHANNEL="v4.2"
 SOURCE="opencloud-operators"
 SOURCE_NS="openshift-marketplace"
@@ -46,7 +48,7 @@ LOG_FILE="setup_tenant_log_$(date +'%Y%m%d%H%M%S').log"
 STEP=0
 
 # preview mode directory
-PREVIEW_DIR="/tmp/preview"
+PREVIEW_DIR="/tmp/setup-tenant-$(date +'%Y%m%d%H%M%S')-preview"
 
 # ---------- Main functions ----------
 
@@ -66,6 +68,10 @@ function main() {
 }
 
 function parse_arguments() {
+    script_name=`basename ${0}`
+    echo "All arguments passed into the ${script_name}: $@"
+    echo ""
+
     # process options
     while [[ "$@" != "" ]]; do
         case "$1" in
@@ -166,7 +172,7 @@ function print_usage() {
     echo "   --license-accept               Required. Set this flag to accept the license agreement"
     echo "   --enable-private-catalog       Optional. Set this flag to use namespace scoped CatalogSource. Default is in openshift-marketplace namespace"
     echo "   --with-minimal-rbac string     Optional. Provide "skip" or file path to the minimal RBAC permissions required by the namespace scope operator for all to be deployed services"
-    echo "   -c, --channel string           Optional. Channel for Subscription(s). Default is v4.3"
+    echo "   -c, --channel string           Optional. Channel for Subscription(s). Default is v4.6"
     echo "   -i, --install-mode string      Optional. InstallPlan Approval Mode. Default is Automatic. Set to Manual for manual approval mode"
     echo "   -s, --source string            Optional. CatalogSource name. This assumes your CatalogSource is already created. Default is opencloud-operators"
     echo "   -n, --namespace string         Optional. Namespace of CatalogSource. Default is openshift-marketplace"
@@ -190,6 +196,7 @@ function pre_req() {
 
     check_command "${OC}"
     check_command "${YQ}"
+    check_yq_version
 
     # Checking oc command logged in
     user=$($OC whoami 2> /dev/null)
@@ -460,9 +467,9 @@ EOF
             done
             existing_ns="${tmp_ns_list}"
         fi
-        new_ns_list=$(echo ${existing_ns} ${TETHERED_NS//,/ } ${SERVICES_NS} | xargs -n1 | sort -u | xargs)
+        new_ns_list=$(echo ${existing_ns} ${TETHERED_NS//,/ } ${SERVICES_NS} | tr ' ' '\n' | sort -u | tr '\n' ' ' | sed 's/ $//')
     else
-        new_ns_list=$(echo ${TETHERED_NS//,/ } ${SERVICES_NS} | xargs -n1 | sort -u | xargs)
+        new_ns_list=$(echo ${TETHERED_NS//,/ } ${SERVICES_NS} | tr ' ' '\n' | sort -u | tr '\n' ' ' | sed 's/ $//')
     fi
     debug1 "List of namespaces for common-service NSS ${new_ns_list}"
 
@@ -709,6 +716,19 @@ EOF
     echo ""
 
     while [ $retries -gt 0 ]; do
+        # Wait for the operator pod to be ready by 60s if ibm-common-service-operator subscription exists
+        is_sub_exist "ibm-common-service-operator" "$OPERATOR_NS"
+        if [ $? -eq 0 ]; then
+            ${OC} -n ${OPERATOR_NS} wait --for=condition=Ready pod -l name=ibm-common-service-operator --timeout=60s 2> /dev/null
+            if [[ $? -eq 0 ]]; then
+                debug1 "ibm-common-service-operator pod is ready\n"
+            else
+                warning "ibm-common-service-operator pod is not ready, retry it in ${delay} seconds...\n"
+                sleep ${delay}
+                retries=$((retries-1))
+                continue
+            fi
+        fi
 
         cat "${PREVIEW_DIR}/commonservice.yaml" | ${OC_CMD} apply -f -
 
@@ -729,6 +749,7 @@ EOF
             sleep ${delay}
             retries=$((retries-1))
         fi
+
     done
 
     if [ $retries -eq 0 ] && [ $RETRY_CONFIG_CSCR -eq 1 ]; then

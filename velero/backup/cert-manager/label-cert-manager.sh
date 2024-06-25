@@ -103,27 +103,139 @@ do
 done
 
 #ensure zenservice custom route secrets are labeled
-zen_namespace_list=$(oc get zenservice -A | awk '{if (NR!=1) {print $1}}')
-for zen_namespace in $zen_namespace_list
-do
-    zenservice_list=$(oc get zenservice -n $zen_namespace | awk '{if (NR!=1) {print $2}}')
-    for zenservice in $zenservice_list
+zen_namespace_list=$(oc get zenservice -A | awk '{if (NR!=1) {print $1}}' || echo "fail")
+if [[ $zen_namespace_list != "fail" ]]; then 
+    for zen_namespace in $zen_namespace_list
     do
-        zen_secret_name=$(oc get zenservice $zenservice -n $zen_namespace -o=jsonpath='{.spec.zenCustomRoute.route_secret}')
-        echo $zen_secret_name
-        echo $zen_namespace
-        echo "---"
-        oc label secret $zen_secret_name -n $zen_namespace foundationservices.cloudpak.ibm.com=cert-manager --overwrite=true
+        zenservice_list=$(oc get zenservice -n $zen_namespace | awk '{if (NR!=1) {print $1}}')
+        for zenservice in $zenservice_list
+        do
+            zen_secret_name=$(oc get zenservice $zenservice -n $zen_namespace -o=jsonpath='{.spec.zenCustomRoute.route_secret}')
+            echo $zen_secret_name
+            echo $zen_namespace
+            echo "---"
+            oc label secret $zen_secret_name -n $zen_namespace foundationservices.cloudpak.ibm.com=cert-manager --overwrite=true
+        done
     done
-done
+else
+    echo "[INFO] No zenservices found on cluster, skipping labeling zen custom route secrets..."
+fi
 
 #ensure iam custom route secrets are labeled
-cm_namespace_list=$(oc get configmap -A | grep cs-onprem-tenant-config | awk '{if (NR!=1) {print $1}}')
-for tenant_config_namespace in $cm_namespace_list
-do
-    iam_secret_name=$(oc get configmap cs-onprem-tenant-config -n $tenant_config_namespace -o=jsonpath='{.data.custom_host_certificate_secret}')
-    echo $iam_secret_name
-    echo $tenant_config_namespace
-    echo "---"
-    oc label secret $iam_secret_name -n $tenant_config_namespace foundationservices.cloudpak.ibm.com=cert-manager --overwrite=true
-done
+cm_namespace_list=$(oc get configmap -A | grep cs-onprem-tenant-config | awk '{if (NR!=1) {print $1}}' || echo "fail")
+if [[ $cm_namespace_list != "fail" ]]; then
+    for tenant_config_namespace in $cm_namespace_list
+    do
+        iam_secret_name=$(oc get configmap cs-onprem-tenant-config -n $tenant_config_namespace -o=jsonpath='{.data.custom_host_certificate_secret}')
+        echo $iam_secret_name
+        echo $tenant_config_namespace
+        echo "---"
+        oc label secret $iam_secret_name -n $tenant_config_namespace foundationservices.cloudpak.ibm.com=cert-manager --overwrite=true
+    done
+else
+    echo "[INFO] Configmap cs-onprem-tenant-config not found, skipping copying custom secrets..."
+fi
+
+#grab default admin credentials
+auth_namespace_list=$(oc get secret -A | grep platform-auth-idp-credentials | grep -v "bindinfo" |  awk '{print $1}' | tr "\n" " " || echo "none")
+if [[ $auth_namespace_list != "none" ]]; then
+    for auth_namespace in $auth_namespace_list
+    do
+        echo "platform-auth-idp-credentials"
+        echo $auth_namespace
+        echo "---"
+        oc label secret platform-auth-idp-credentials -n $auth_namespace foundationservices.cloudpak.ibm.com=cert-manager --overwrite=true
+    done
+else
+    echo "[INFO] Secret platform-auth-idp-credentials not present in namespace $auth_namespace. Skipping..."
+fi
+
+#grab default scim credentials
+scim_secret_namespace_list=$(oc get secret -A | grep platform-auth-scim-credentials | grep -v "bindinfo" |  awk '{print $1}' | tr "\n" " " || echo "none")
+if [[ $scim_secret_namespace_list != "none" ]]; then
+    for scim_namespace in $scim_secret_namespace_list
+    do
+        echo "platform-auth-scim-credentials"
+        echo $scim_namespace
+        echo "---"
+        oc label secret platform-auth-scim-credentials -n $scim_namespace foundationservices.cloudpak.ibm.com=cert-manager --overwrite=true
+    done
+else
+    echo "[INFO] Secret platform-auth-scim-credentials not present in namespace $scim_namespace. Skipping..."
+fi
+
+#grab LDAP TLS certificate
+ldaps_secret_namespace_list=$(oc get secret -A | grep platform-auth-ldaps-ca-cert | grep -v "bindinfo" |  awk '{print $1}' | tr "\n" " " || echo "none")
+if [[ $ldaps_secret_namespace_list != "none" ]]; then
+    for ldaps_namespace in $ldaps_secret_namespace_list
+    do
+        echo "platform-auth-ldaps-ca-cert"
+        echo $ldaps_namespace
+        echo "---"
+        oc label secret platform-auth-ldaps-ca-cert -n $ldaps_namespace foundationservices.cloudpak.ibm.com=cert-manager --overwrite=true
+    done
+else
+    echo "[INFO] Secret platform-auth-ldaps-ca-cert not present in namespace $ldaps_namespace. Skipping..."
+fi
+
+#grab icp service id apikey (if it exists)
+icp_serviceid_apikey_secret_namespace_list=$(oc get secret -A | grep icp-serviceid-apikey-secret | grep -v "bindinfo" |  awk '{print $1}' | tr "\n" " " || echo "none")
+if [[ $icp_serviceid_apikey_secret_namespace_list != "none" ]]; then
+    for icp_serviceid_namespace in $icp_serviceid_apikey_secret_namespace_list
+    do
+        echo "icp-serviceid-apikey"
+        echo $icp_serviceid_namespace
+        echo "---"
+        oc label secret icp-serviceid-apikey-secret -n $icp_serviceid_namespace foundationservices.cloudpak.ibm.com=cert-manager --overwrite=true
+    done
+else
+    echo "[INFO] Secret icp-serviceid-apikey-secret not present in namespace $icp_serviceid_namespace. Skipping..."
+fi
+
+#grab zen service id apikey (if it exists)
+zen_serviceid_apikey_secret_namespace_list=$(oc get secret -A | grep zen-serviceid-apikey-secret| grep -v "bindinfo" |  awk '{print $1}' | tr "\n" " " || echo "none")
+if [[ $zen_serviceid_apikey_secret_namespace_list != "none" ]]; then
+    for zen_serviceid_namespace in $zen_serviceid_apikey_secret_namespace_list
+    do
+        echo "zen-serviceid-apikey-secret"
+        echo $zen_serviceid_namespace
+        echo "---"
+        oc label secret zen-serviceid-apikey-secret -n $zen_serviceid_namespace foundationservices.cloudpak.ibm.com=cert-manager --overwrite=true
+    done
+else
+    echo "[INFO] Secret zen-serviceid-apikey-secret not present in namespace $zen_serviceid_namespace. Skipping..."
+fi
+
+#add labels to iaf-system-automation-aui-zen-cert elasticsearch cert/secret
+auto_zen_cert_ns_list=$(oc get certificate -A --no-headers | grep iaf-system-automationui-aui-zen-cert | awk '{print $1}' | tr "\n" " " || echo "none")
+if [[ $auto_zen_cert_ns_list != "none" ]]; then
+    for ns in $auto_zen_cert_ns_list
+    do
+        secret_name=$(oc get certificate -n $ns iaf-system-automationui-aui-zen-cert -o jsonpath='{.spec.secretName}')
+        oc label secret $secret_name -n $ns foundationservices.cloudpak.ibm.com=cert-manager --overwrite=true
+        oc label certificate iaf-system-automationui-aui-zen-cert -n $ns foundationservices.cloudpak.ibm.com=cert-manager --overwrite=true
+    done
+fi
+
+#add labels to elasticsearch cert/secret
+elasticsearch_cert_ns_list=$(oc get certificate -A --no-headers | grep iaf-system-elasticsearch-es-client-cert | awk '{print $1}' | tr "\n" " " || echo "none")
+if [[ $elasticsearch_cert_ns_list != "none" ]]; then
+    for ns in $elasticsearch_cert_ns_list
+    do
+        oc label certificate iaf-system-elasticsearch-es-client-cert -n $ns foundationservices.cloudpak.ibm.com=cert-manager --overwrite=true
+        oc label secret iaf-system-elasticsearch-es-client-cert-kp -n $ns foundationservices.cloudpak.ibm.com=cert-manager --overwrite=true
+    done
+fi
+
+#remove label from metastore-edb certificate and secret
+metastore_secret_ns_list=$(oc get secret -A --no-headers | grep  ibm-zen-metastore-edb-secret | awk '{print $1}' | tr "\n" " " || echo "none")
+if [[ $metastore_secret_ns_list != "none" ]]; then
+    echo "[INFO] removing label from zen-metastore-edb-secret and certificate."
+    for ns in $metastore_secret_ns_list
+    do
+        oc label secret ibm-zen-metastore-edb-secret -n $ns foundationservices.cloudpak.ibm.com-
+        oc label certificate ibm-zen-metastore-edb-certificate -n $ns foundationservices.cloudpak.ibm.com-
+    done
+fi
+
+echo "[SUCCESS] Certificates and secrets successfully labeled."

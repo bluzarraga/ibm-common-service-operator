@@ -25,11 +25,13 @@ function help() {
     echo "SYNTAX:"
     echo "authorize-namespace.sh [namespace | default current namespace] [-to namespace | default ibm-common-services] [-delete]"
     echo "WHERE:"
-    echo "  namespace: It is the name of the namespace you wish to authorize.  This namespace MUST exist."
-    echo "             By default, the current namespace is assumed"
-    echo "  -to namespace: It is the name of the namespace of the NamespaceScope operator."
-    echo "                 This namespace MUST exist.  The default is ibm-common-services."
-    echo "  -delete: It removes the ability for the NamespaceScope operator in tonamespace to manage artifacts in the namespace."    
+    echo "  --oc string                    Optional. File path to oc CLI. Default uses oc in your PATH"
+    echo "  namespace:                     It is the name of the namespace you wish to authorize.  This namespace MUST exist."
+    echo "                                 By default, the current namespace is assumed"
+    echo "  -to namespace:                 It is the name of the namespace of the NamespaceScope operator."
+    echo "                                 This namespace MUST exist.  The default is ibm-common-services."
+    echo "  -delete:                       It removes the ability for the NamespaceScope operator in tonamespace to manage artifacts in the namespace."    
+    echo "  --with-minimal-rbac string     Optional. Provide "skip" or file path to the minimal RBAC permissions required by the namespace scope operator for all to be deployed services"
     echo ""
     echo "You must be logged into the Openshift cluster from the oc command line"
     echo ""
@@ -39,12 +41,23 @@ function help() {
 # MAIN LOGIC
 #
 
+OC="oc"
 TARGETNS=""
 TONS="ibm-common-services"
 DELETE=0
+MINIMAL_RBAC_ENABLED=0
 
 while (( $# )); do
   case "$1" in
+    --oc)
+      if [ -n "$2" ] && [ ${2:0:1} != "-" ]; then
+        OC=$2
+        shift 2
+      else
+        echo "Error: Argument for $1 is missing" >&2
+        exit 1
+      fi
+      ;;
     -to|--to)
       if [ -n "$2" ] && [ ${2:0:1} != "-" ]; then
         TONS=$2
@@ -57,6 +70,16 @@ while (( $# )); do
     -delete|--delete)
       DELETE=1
       shift 1
+      ;;
+    --with-minimal-rbac)
+      if [ -n "$2" ] && [ ${2:0:1} != "-" ]; then
+        MINIMAL_RBAC_ENABLED=1
+        MINIMAL_RBAC=$2
+        shift 2
+      else
+        echo "Error: Argument for $1 is missing" >&2
+        exit 1
+      fi
       ;;
     -*|--*=) # unsupported flags
       echo "Error: Unsupported flag $1" >&2
@@ -75,7 +98,7 @@ done
 #
 
 if [ -z $TARGETNS ]; then
-    TARGETNS=$(oc project -q)
+    TARGETNS=$(${OC} project -q)
     if [ $? -ne 0 ]; then
       echo "Error: You do not seem to be logged into Openshift" >&2
       help
@@ -92,14 +115,14 @@ fi
 
 TARGETNS=${TARGETNS//[[:blank:]]/}
 
-oc get ns $TARGETNS
+${OC} get ns $TARGETNS
 if [ $? -ne 0 ]; then
     echo "Invalid  namespace " $TARGETNS >&2
     help
     exit 1
 fi
 
-oc get ns $TONS
+${OC} get ns $TONS
 if [ $? -ne 0 ]; then
     echo "Invalid  namespace " $TARGETNS >&2
     help
@@ -112,12 +135,20 @@ else
   echo "Authorizing the NamespaceScope operator in $TONS to manage namespace $TARGETNS " >&2
 fi
 
+# Check if the file path to the minimal RBAC permissions exists
+if [[ $MINIMAL_RBAC_ENABLED -eq 1 ]]; then
+    if [[ ! -f "$MINIMAL_RBAC" ]] && [[ "$MINIMAL_RBAC" != "skip" ]] ; then
+        echo "File $MINIMAL_RBAC does not exist"
+        exit 1
+    fi
+fi
+
 #
 # Delete permissions and update the list if needed
 #
 if [ $DELETE -ne 0 ]; then
-  oc delete role nss-managed-role-from-$TONS -n $TARGETNS --ignore-not-found
-  oc delete rolebinding nss-managed-role-from-$TONS -n $TARGETNS --ignore-not-found
+  ${OC} delete role nss-managed-role-from-$TONS -n $TARGETNS --ignore-not-found
+  ${OC} delete rolebinding nss-managed-role-from-$TONS -n $TARGETNS --ignore-not-found
   exit 0
 fi
 
@@ -125,7 +156,8 @@ fi
 #
 # Define a role for service accounts
 #
-cat <<EOF | oc apply -n $TARGETNS -f -
+if [ $MINIMAL_RBAC_ENABLED -eq 0 ]; then   
+  cat <<EOF | ${OC} apply -n $TARGETNS -f -
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -145,11 +177,19 @@ rules:
   - watch
   - deletecollection
 EOF
+else
+  if [[ "$MINIMAL_RBAC" == "skip" ]]; then
+      echo "Skipping creating minimal RBAC for NSS"
+      exit 0
+  fi
+  echo "Creating nss minimal rbac role from $MINIMAL_RBAC:"
+  sed -e "s/^.*name: .*/  name: nss-managed-role-from-$TONS/g" -e "s/ns_to_replace/$TARGETNS/g" "$MINIMAL_RBAC" | ${OC} apply -f -
+fi
 
 #
 # Bind the service account in the TO namespace to the Role in the target namespace
 #
-cat <<EOF | oc apply -n $TARGETNS -f -
+cat <<EOF | ${OC} apply -n $TARGETNS -f -
 kind: RoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:

@@ -27,7 +27,11 @@ function warning() {
 }
 
 function error() {
-    msg "\33[31m[✘] ${1}\33[0m"
+    local error_message="$1"
+    local function_name="${FUNCNAME[1]}"
+    local line_number="${BASH_LINENO[0]}"
+    local script_name="${BASH_SOURCE[1]}"
+    msg "\33[31m[✘] Error in ${script_name} at line $line_number in function ${function_name}: ${error_message}\33[0m"
     exit 1
 }
 
@@ -49,6 +53,15 @@ function check_command() {
     else
         success "${command} command available"
     fi
+}
+
+function check_yq_version() {
+  yq_version=$("${YQ}" --version | awk '{print $NF}' | sed 's/^v//')
+  yq_minimum_version=4.18.1
+
+  if [ "$(printf '%s\n' "$yq_minimum_version" "$yq_version" | sort -V | head -n1)" != "$yq_minimum_version" ]; then 
+    error "yq version $yq_version must be at least $yq_minimum_version or higher.\nInstructions for installing/upgrading yq are available here: https://github.com/marketplace/actions/yq-portable-yaml-processor"
+  fi
 }
 
 function check_version() {
@@ -234,7 +247,7 @@ function wait_for_issuer() {
     local issuer=$1
     local namespace=$2
     local condition="${OC} -n ${namespace} get issuer.v1.cert-manager.io ${issuer} --ignore-not-found -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}' | grep 'True'"
-    local retries=10
+    local retries=50
     local sleep_time=6
     local total_time_mins=$(( sleep_time * retries / 60))
     local wait_message="Waiting for Issuer ${issuer} in namespace ${namespace} to be Ready"
@@ -248,7 +261,7 @@ function wait_for_certificate() {
     local certificate=$1
     local namespace=$2
     local condition="${OC} -n ${namespace} get certificate.v1.cert-manager.io ${certificate} --ignore-not-found -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}' | grep 'True'"
-    local retries=10
+    local retries=50
     local sleep_time=6
     local total_time_mins=$(( sleep_time * retries / 60))
     local wait_message="Waiting for Certificate ${certificate} in namespace ${namespace} to be Ready"
@@ -290,7 +303,7 @@ function wait_for_cscr_status(){
     local namespace=$1
     local name=$2
     local condition="${OC} -n ${namespace} get commonservice ${name} --no-headers --ignore-not-found -o jsonpath='{.status.phase}' | grep 'Succeeded'"
-    local retries=20
+    local retries=100
     local sleep_time=6
     local total_time_mins=$(( sleep_time * retries / 60))
     local wait_message="Waiting for CommonService CR ${name} in ${namespace} to be ready"
@@ -470,7 +483,7 @@ function wait_for_operator_upgrade() {
     local install_mode=$4
     local condition="${OC} get subscription.operators.coreos.com -l operators.coreos.com/${package_name}.${namespace}='' -n ${namespace} -o yaml -o jsonpath='{.items[*].status.installedCSV}' | grep -w $channel"
 
-    local retries=10
+    local retries=20
     local sleep_time=30
     local total_time_mins=$(( sleep_time * retries / 60))
     local wait_message="Waiting for operator ${package_name} to be upgraded"
@@ -629,7 +642,31 @@ function validate_operator_catalogsource(){
         error "Multiple CatalogSource are available for $pm in $operator_ns namespace, please specify the correct CatalogSource name and namespace"
     elif [[ $return_value -eq 2 ]]; then
         warning "CatalogSource $source from $source_ns CatalogSourceNamespace is not available for $pm in $operator_ns namespace"
-        error "No CatalogSource is available for $pm in $operator_ns namespace"
+        
+        # Retry and wait for the CatalogSource to be available
+        retries=5
+        while [[ $retries -gt 0 ]]; do
+            echo "Wait for CatalogSource to be ready..."
+            sleep 20
+            correct_result=$(catalogsource_correction $source $source_ns $pm $operator_ns $channel)
+            IFS=" " read -r return_value correct_source correct_source_ns <<< "$correct_result"
+            
+            if [[ $return_value -eq 0 ]]; then
+                success "CatalogSource $source from $source_ns CatalogSourceNamespace is available for $pm in $operator_ns namespace after retry"
+                break
+            elif [[ $return_value -eq 3 ]]; then
+                success "CatalogSource $correct_source from $correct_source_ns CatalogSourceNamespace is available for $pm in $operator_ns namespace after retry"
+                break
+            fi
+
+            ((retries--))
+        done
+        
+        # If all retries failed, display an error message
+        if [[ $retries -eq 0 ]]; then
+            error "No CatalogSource is available for $pm in $operator_ns namespace in the given channel $channel after multiple attempts"
+        fi
+        
     elif [[ $return_value -eq 3 ]]; then
         warning "CatalogSource $source from $source_ns CatalogSourceNamespace is not available for $pm in $operator_ns namespace"
         success "CatalogSource $correct_source from $correct_source_ns CatalogSourceNamespace is available for $pm in $operator_ns namespace"
@@ -849,24 +886,25 @@ function update_cscr() {
         if [[ -z "${result}" ]]; then
             info "Creating CommonService CR common-service in $namespace"
             # copy commonservice from operator namespace
-            ${OC} get commonservice common-service -n "${operator_ns}" -o yaml | ${YQ} eval '.spec += {"operatorNamespace": "'${operator_ns}'", "servicesNamespace": "'${service_ns}'"}' > common-service.yaml
+            ${OC} get commonservice common-service -n "${operator_ns}" -o yaml | ${YQ} eval '.spec += {"operatorNamespace": "'${operator_ns}'", "servicesNamespace": "'${service_ns}'"}' > /tmp/common-service.yaml
         else
             info "Configuring CommonService CR common-service in $namespace"
-            ${OC} get commonservice common-service -n "${namespace}" -o yaml | ${YQ} eval '.spec += {"operatorNamespace": "'${operator_ns}'", "servicesNamespace": "'${service_ns}'"}' > common-service.yaml
+            ${OC} get commonservice common-service -n "${namespace}" -o yaml | ${YQ} eval '.spec += {"operatorNamespace": "'${operator_ns}'", "servicesNamespace": "'${service_ns}'"}' > /tmp/common-service.yaml
         fi
-        ${YQ} eval 'select(.kind == "CommonService") | del(.metadata.resourceVersion) | del(.metadata.uid) | .metadata.namespace = "'${namespace}'"' common-service.yaml | ${OC} apply --overwrite=true -f -
+        ${YQ} eval 'select(.kind == "CommonService") | del(.metadata.resourceVersion) | del(.metadata.uid) | .metadata.namespace = "'${namespace}'"' /tmp/common-service.yaml | ${OC} apply --overwrite=true -f -
         if [[ $? -ne 0 ]]; then
             error "Failed to apply CommonService CR in ${namespace}"
         fi
     done
 
-    rm common-service.yaml
+    rm /tmp/common-service.yaml
 }
 
 # Update nss cr
 function update_nss_kind() {
     local operator_ns=$1
     local nss_list=$2
+    local members=""
     for n in ${nss_list//,/ }
     do
         local members=$members$(cat <<EOF
@@ -899,39 +937,62 @@ EOF
         error "Failed to create NSS CR in ${OPERATOR_NS}"
     fi
 }
+
+function create_nss_configmap(){
+    local services_ns=$1
+    local nss_list=$2
+    local object=$(
+        cat <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: namespace-scope
+  namespace: $services_ns
+data:
+    namespaces: ${nss_list}
+EOF
+    )
+
+    echo
+    info "Creating the ConfigMap namesapce-scope in ${services_ns}"
+    echo "$object" | ${OC} apply -f -
+    if [[ $? -ne 0 ]]; then
+        error "Failed to create NamespaceScope ConfigMap in ${services_ns}"
+    fi
+}
+
 # ---------- creation functions end----------#
 
 # ---------- cleanup functions start----------#
 
 function cleanup_cp2() {
     local operator_ns=$1
-    local control_ns=$2
-    local nss_list=$3
-    local enable_multi_instance=0
+    local service_ns=$2
+    local control_ns=$3
+    local nss_list=$4
 
-    if [[ "$operator_ns" != "$control_ns" ]]; then
-        enable_multi_instance=1
-    fi
-
-    if [[ enable_multi_instance -eq 0 ]]; then
+    # Clean up the webhook, secretshare and crossplane for single shared CS instance or all namespaces mode
+    if [[ "$operator_ns" == "$control_ns" ]] || [[ "$control_ns" == "$service_ns" ]]; then
+        title "This is a single shared Common Service instance or all namespace mode upgrade, clean up webhook, secretshare and crossplane"
         cleanup_webhook $control_ns $nss_list
         cleanup_secretshare $control_ns $nss_list
         cleanup_crossplane
+        cleanup_OperandBindInfo $control_ns
+        cleanup_NamespaceScope $control_ns
+    else
+        cleanup_OperandBindInfo $operator_ns
+        cleanup_NamespaceScope $operator_ns
     fi
-
-
-    cleanup_OperandBindInfo $operator_ns
-    cleanup_NamespaceScope $operator_ns
 }
 
 # clean up webhook deployment and webhookconfiguration
 function cleanup_webhook() {
     local control_ns=$1
     local nss_list=$2
+    local resource_types=("podpresets.operator.ibm.com")
     for ns in ${nss_list//,/ }
     do
-        info "Deleting podpresets in namespace $ns..."
-        ${OC} get podpresets.operator.ibm.com -n $ns --no-headers | awk '{print $1}' | xargs ${OC} delete -n $ns --ignore-not-found podpresets.operator.ibm.com
+        delete_resources resource_types[@] $ns
     done
     msg ""
 
@@ -947,7 +1008,97 @@ function cleanup_webhook() {
 
 }
 
-# clean up issuers, certificates and secrets
+# Clean up secretshare deployment and CR in service_ns
+function cleanup_secretshare() {
+    local control_ns=$1
+    local nss_list=$2
+    local resource_types=("secretshare")
+    for ns in ${nss_list//,/ }
+    do
+        delete_resources resource_types[@] $ns
+    done
+    msg ""
+
+    cleanup_deployment "secretshare" "$control_ns"
+}
+
+# Clean up crossplane sub and CR in operator_ns and service_ns
+function cleanup_crossplane() {
+    # Check if crossplane operator is installed or not
+    local is_exist=$($OC get subscription.operators.coreos.com -A --no-headers | (grep ibm-crossplane || echo "fail") | awk '{print $1}')
+    local resource_types=("configuration.pkg.ibm.crossplane.io" "lock.pkg.ibm.crossplane.io" "ProviderConfig")
+    if [[ $is_exist == "fail" ]]; then
+        # Delete CR
+        msg "Cleanup crossplane CR"
+        delete_resources resource_types[@] 
+
+        # Delete Sub
+        info "cleanup crossplane Subscription and ClusterServiceVersion"
+        local namespace=$($OC get subscription.operators.coreos.com -A --no-headers | (grep ibm-crossplane-operator-app || echo "fail") | awk '{print $1}')
+        if [[ $namespace != "fail" ]]; then
+            delete_operator "ibm-crossplane-provider-kubernetes-operator-app" "$namespace"
+            delete_operator "ibm-crossplane-provider-ibm-cloud-operator-app" "$namespace"
+            delete_operator "ibm-crossplane-operator-app" "$namespace"
+        fi
+    else
+        info "crossplane operator not exist, skip clean crossplane"
+    fi
+}
+
+function cleanup_OperandBindInfo() {
+    local namespace=$1
+    ${OC} delete operandbindInfo ibm-commonui-bindinfo -n ${namespace} --ignore-not-found
+}
+
+function cleanup_NamespaceScope() {
+    local namespace=$1
+    resource_types=("namespacescope")
+
+    delete_resources resource_types[@] $namespace
+}
+
+function cleanup_OperandRequest() {
+    local namespace=$1
+    ${OC} delete operandrequest ibm-commonui-request ibm-mongodb-request -n ${namespace} --ignore-not-found
+}
+
+function cleanup_deployment() {
+    local name=$1
+    local namespace=$2
+    info "Deleting existing Deployment ${name} in namespace ${namespace}..."
+    ${OC} delete deployment ${name} -n ${namespace} --ignore-not-found
+
+    wait_for_no_pod ${namespace} ${name}
+}
+
+function delete_resources() {
+    local resource_types=("${!1}")
+    local namespace=${2:--A}
+    local namespace_arg="-A"
+
+    if [ $namespace != "-A" ]; then
+        namespace_arg="-n $namespace"
+    fi
+
+    for resource_type in "${resource_types[@]}"; do
+        msg "Deleting $resource_type resources..."
+        # Retrieve resources of the specified type
+        resources=$(${OC} get $resource_type ${namespace_arg} --no-headers --ignore-not-found | awk '{print $1}')
+        for resource in $resources; do
+            msg "Deleting $resource..."
+            if ! ${OC} delete $resource_type $resource ${namespace_arg} --ignore-not-found --timeout=60s > /dev/null 2>&1; then
+                warning "Deletion of $resource failed. Patching finalizer..."
+                if [ "$namespace_arg" == "-A" ]; then
+                    ${OC} patch $resource_type $resource --type="json" -p '[{"op": "remove", "path":"/metadata/finalizers"}]'
+                else
+                    ${OC} patch $resource_type $resource ${namespace_arg} --type="json" -p '[{"op": "remove", "path":"/metadata/finalizers"}]'
+                fi
+            fi
+        done 
+    done
+}
+
+# Clean up issuers, certificates and secrets
 function cleanup_cm_resources() {
     local issuer_name=$1
     local cert_name=$2
@@ -971,74 +1122,8 @@ function cleanup_cm_resources() {
         ${OC} delete secret $sercret_name -n $namespace --ignore-not-found
         msg ""
     fi
-
 }
-
-# TODO: clean up secretshare deployment and CR in service_ns
-function cleanup_secretshare() {
-    local control_ns=$1
-    local nss_list=$2
-
-    for ns in ${nss_list//,/ }
-    do
-        info "Deleting SecretShare in namespace $ns..."
-        ${OC} get secretshare -n $ns --no-headers | awk '{print $1}' | xargs ${OC} delete -n $ns --ignore-not-found secretshare
-    done
-    msg ""
-
-    cleanup_deployment "secretshare" "$control_ns"
-
-}
-
-# TODO: clean up crossplane sub and CR in operator_ns and service_ns
-function cleanup_crossplane() {
-    #check if crossplane operator is installed or not
-    local is_exist=$($OC get subscription.operators.coreos.com -A --no-headers | (grep ibm-crossplane || echo "fail") | awk '{print $1}')
-    if [[ $is_exist != "fail" ]]; then
-        # delete CR
-        info "cleanup crossplane CR"
-        ${OC} get configuration.pkg.ibm.crossplane.io -A --no-headers | awk '{print $1}' | xargs ${OC} delete --ignore-not-found configuration.pkg.ibm.crossplane.io
-        ${OC} get lock.pkg.ibm.crossplane.io -A --no-headers | awk '{print $1}' | xargs ${OC} delete --ignore-not-found lock.pkg.ibm.crossplane.io
-        ${OC} get ProviderConfig -A --no-headers | awk '{print $1}' | xargs ${OC} delete --ignore-not-found ProviderConfig
-
-        sleep 30
-
-        # delete Sub
-        info "cleanup crossplane Subscription and ClusterServiceVersion"
-        local namespace=$($OC get subscription.operators.coreos.com -A --no-headers | (grep ibm-crossplane-operator-app || echo "fail") | awk '{print $1}')
-        if [[ $namespace != "fail" ]]; then
-            delete_operator "ibm-crossplane-provider-kubernetes-operator-app" "$namespace"
-            delete_operator "ibm-crossplane-provider-ibm-cloud-operator-app" "$namespace"
-            delete_operator "ibm-crossplane-operator-app" "$namespace"
-        fi
-    else
-        info "crossplane operator not exist, skip clean crossplane"
-    fi
-}
-
-function cleanup_OperandBindInfo() {
-    local namespace=$1
-    ${OC} delete operandbindInfo ibm-commonui-bindinfo -n ${namespace} --ignore-not-found
-}
-
-function cleanup_NamespaceScope() {
-    local namespace=$1
-    ${OC} delete namespacescope odlm-scope-managedby-odlm nss-odlm-scope nss-managedby-odlm common-service -n ${namespace} --ignore-not-found
-}
-
-function cleanup_OperandRequest() {
-    local namespace=$1
-    ${OC} delete operandrequest ibm-commonui-request ibm-mongodb-request -n ${namespace} --ignore-not-found
-}
-
-function cleanup_deployment() {
-    local name=$1
-    local namespace=$2
-    info "Deleting existing Deployment ${name} in namespace ${namespace}..."
-    ${OC} delete deployment ${name} -n ${namespace} --ignore-not-found
-
-    wait_for_no_pod ${namespace} ${name}
-}
+  
 # ---------- cleanup functions end ----------#
 
 function get_control_namespace() {
@@ -1050,7 +1135,7 @@ function get_control_namespace() {
 
     # Check if the ConfigMap exists
     if [[ -z "${config_map_data}" ]]; then
-        warning "Not found common-serivce-maps ConfigMap in kube-public namespace. It is a single shared Common Service instance upgrade"
+        warning "Not found common-serivce-maps ConfigMap in kube-public namespace. It is a single shared Common Service instance or all namespace mode upgrade"
     else
         # Get the controlNamespace value
         control_namespace=$(echo "${config_map_data}" | ${YQ} -r '.controlNamespace')
@@ -1150,6 +1235,7 @@ function update_operator() {
     local source=$4
     local source_ns=$5
     local install_mode=$6
+    local remove_opreq_label=${7:-}
     local retries=5 # Number of retries
     local delay=5 # Delay between retries in seconds
 
@@ -1160,12 +1246,20 @@ function update_operator() {
     fi
 
     title "Updating ${sub_name} in namesapce ${ns}..."
+
+    # there is currently a bug with oc apply where the removed labels are added back by
+    # something (either Open Shift or OLM), so need to use patch
+    # "~1" is the escape sequence for "/" character
+    if [ ! -z "$remove_opreq_label" ]; then
+        ${OC} patch subscription.operators.coreos.com ${sub_name} -n ${ns} --type='json' -p='[{"op": "remove", "path": "/metadata/labels/operator.ibm.com~1opreq-control"}]' || warning "Could not patch Subscription ${sub_name} in ${ns} to remove label"
+    fi
+
     while [ $retries -gt 0 ]; do
         # Retrieve the latest version of the subscription
-        ${OC} get subscription.operators.coreos.com ${sub_name} -n ${ns} -o yaml > sub.yaml
+        ${OC} get subscription.operators.coreos.com ${sub_name} -n ${ns} -o yaml > /tmp/sub.yaml
 
-        existing_channel=$(${YQ} eval '.spec.channel' sub.yaml)
-        existing_catalogsource=$(${YQ} eval '.spec.source' sub.yaml)
+        existing_channel=$(${YQ} eval '.spec.channel' /tmp/sub.yaml)
+        existing_catalogsource=$(${YQ} eval '.spec.source' /tmp/sub.yaml)
 
         compare_semantic_version $existing_channel $channel
         return_channel_value=$?
@@ -1183,21 +1277,21 @@ function update_operator() {
 
         # Update the subscription with the desired changes
         if [[ "$channel" == "null" ]]; then
-            ${YQ} -i eval 'select(.kind == "Subscription") | .spec += {"channel": null}' sub.yaml
+            ${YQ} -i eval 'select(.kind == "Subscription") | .spec += {"channel": null}' /tmp/sub.yaml
         else
-            ${YQ} -i eval 'select(.kind == "Subscription") | .spec += {"channel": "'${channel}'"}' sub.yaml
+            ${YQ} -i eval 'select(.kind == "Subscription") | .spec += {"channel": "'${channel}'"}' /tmp/sub.yaml
         fi
-        ${YQ} -i eval 'select(.kind == "Subscription") | .spec += {"source": "'${source}'"}' sub.yaml
-        ${YQ} -i eval 'select(.kind == "Subscription") | .spec += {"sourceNamespace": "'${source_ns}'"}' sub.yaml
-        ${YQ} -i eval 'select(.kind == "Subscription") | .spec += {"installPlanApproval": "'${install_mode}'"}' sub.yaml
+        ${YQ} -i eval 'select(.kind == "Subscription") | .spec += {"source": "'${source}'"}' /tmp/sub.yaml
+        ${YQ} -i eval 'select(.kind == "Subscription") | .spec += {"sourceNamespace": "'${source_ns}'"}' /tmp/sub.yaml
+        ${YQ} -i eval 'select(.kind == "Subscription") | .spec += {"installPlanApproval": "'${install_mode}'"}' /tmp/sub.yaml
 
         # Apply the patch
-        ${OC} apply -f sub.yaml
+        ${OC} apply -f /tmp/sub.yaml
 
         # Check if the patch was successful
         if [[ $? -eq 0 ]]; then
             success "Successfully patched subscription ${package_name} in ${ns}"
-            rm sub.yaml
+            rm /tmp/sub.yaml
             return 0
         else
             warning "Failed to patch subscription ${package_name} in ${ns}. Retrying in ${delay} seconds..."
@@ -1207,7 +1301,7 @@ function update_operator() {
     done
 
     error "Maximum retries reached. Failed to patch subscription ${sub_name} in ${ns}"
-    rm sub.yaml
+    rm /tmp/sub.yaml
     return 1
 }
 
@@ -1278,13 +1372,13 @@ function scale_down() {
     local source=$4
     local cs_sub=$(${OC} get subscription.operators.coreos.com -n ${operator_ns} -l operators.coreos.com/ibm-common-service-operator.${operator_ns}='' --no-headers | awk '{print $1}')
     local cs_CSV=$(${OC} get subscription.operators.coreos.com ${cs_sub} -n ${operator_ns} --ignore-not-found -o jsonpath={.status.installedCSV})
-    local odlm_sub=$(${OC} get subscription.operators.coreos.com -n ${operator_ns} -l operators.coreos.com/ibm-odlm.${operator_ns}='' --no-headers | awk '{print $1}')
-    local odlm_CSV=$(${OC} get subscription.operators.coreos.com ${odlm_sub} -n ${operator_ns} --ignore-not-found -o jsonpath={.status.installedCSV})
+    local odlm_sub=$(${OC} get subscription.operators.coreos.com -n ${services_ns} -l operators.coreos.com/ibm-odlm.${services_ns}='' --no-headers | awk '{print $1}')
+    local odlm_CSV=$(${OC} get subscription.operators.coreos.com ${odlm_sub} -n ${services_ns} --ignore-not-found -o jsonpath={.status.installedCSV})
 
-    ${OC} get subscription.operators.coreos.com ${cs_sub} -n ${operator_ns} -o yaml > sub.yaml
+    ${OC} get subscription.operators.coreos.com ${cs_sub} -n ${operator_ns} -o yaml > /tmp/sub.yaml
 
-    existing_channel=$(${YQ} eval '.spec.channel' sub.yaml)
-    existing_catalogsource=$(${YQ} eval '.spec.source' sub.yaml)
+    existing_channel=$(${YQ} eval '.spec.channel' /tmp/sub.yaml)
+    existing_catalogsource=$(${YQ} eval '.spec.source' /tmp/sub.yaml)
     compare_semantic_version $existing_channel $channel
     return_channel_value=$?
 
@@ -1300,7 +1394,7 @@ function scale_down() {
     fi
 
     # Scale down CS
-    msg "Patching CSV ${cs_sub} to scale down deployment in ${operator_ns} namespace to 0..."
+    title "Patching CSV ${cs_sub} to scale down deployment in ${operator_ns} namespace to 0..."
     if [[ ! -z "$cs_CSV" ]]; then
         scale_deployment_csv $operator_ns $cs_CSV 0
     fi
@@ -1311,23 +1405,39 @@ function scale_down() {
     fi
 
     # Scale down ODLM
-    msg "Patching CSV to scale down operand-deployment-lifecycle-manager deployment in ${operator_ns} namespace to 0..."
+    title "Patching CSV to scale down operand-deployment-lifecycle-manager deployment in ${services_ns} namespace to 0..."
     if [[ ! -z "$odlm_CSV" ]]; then
-        scale_deployment_csv $operator_ns $odlm_CSV 0
+        scale_deployment_csv $services_ns $odlm_CSV 0
     fi
-    check_deployment $operator_ns operand-deployment-lifecycle-manager 0
+    check_deployment $services_ns operand-deployment-lifecycle-manager 0
     if [[ $? -ne 0 ]]; then
-        msg "Scaling down operand-deployment-lifecycle-manager deployment in ${operator_ns} namespace to 0..."
-        scale_deployment $operator_ns operand-deployment-lifecycle-manager 0
+        msg "Scaling down operand-deployment-lifecycle-manager deployment in ${services_ns} namespace to 0..."
+        scale_deployment $services_ns operand-deployment-lifecycle-manager 0
     fi
 
     # delete OperandRegistry
-    msg "Deleting OperandRegistry common-service in ${services_ns} namespace..."
+    info "Deleting OperandRegistry common-service in ${services_ns} namespace..."
     ${OC} delete operandregistry common-service -n ${services_ns} --ignore-not-found
+
     # delete validatingwebhookconfiguration
-    msg "Deleting ValidatingWebhookConfiguration ibm-common-service-validating-webhook-${operator_ns} in ${operator_ns} namespace..."
+    info "Deleting ValidatingWebhookConfiguration ibm-common-service-validating-webhook-${operator_ns} in ${operator_ns} namespace..."
     ${OC} delete ValidatingWebhookConfiguration ibm-common-service-validating-webhook-${operator_ns} --ignore-not-found
     rm sub.yaml
+}
+
+function delete_webhook_configuration(){
+    local operator_ns=$1
+    # Find the webhook that matches the labels 
+    local webhook_name=$(${OC} get validatingwebhookconfiguration -n $operator_ns -l olm.owner.kind=ClusterServiceVersion,olm.owner.namespace=$operator_ns -o=yaml | ${YQ} e '.items[] | select(.metadata.labels."olm.owner" | test("ibm-common-service-operator.v[0-9.]+")) | .metadata.name' -)
+
+    # Check if a matching webhook was found, and delete it if so
+    if [ -n "$webhook_name" ]; then
+        info "Deleting ValidatingWebhookConfiguration '$webhook_name' in '$operator_ns'..."
+        ${OC} delete ValidatingWebhookConfiguration "$webhook_name"
+        echo "Webhook '$webhook_name' deleted."
+    else
+        echo "No matching webhook found."
+    fi
 }
 
 function wait_for_operand_registry() {
@@ -1379,8 +1489,8 @@ function accept_license() {
         return 0
     fi
 
-    ${OC} patch "$kind" "$cr_name" -n "$namespace" --type='merge' -p '{"spec":{"license":{"accept":true}}}' || export fail="true"
-    if [[ $fail == "true" ]]; then
+    local result=$(${OC} patch "$kind" "$cr_name" -n "$namespace" --type='merge' -p '{"spec":{"license":{"accept":true}}}' || echo "fail")
+    if [[ "${result}" == "fail" ]]; then
         warning "Failed to update license acceptance for $kind CR $cr_name\n"
     else
         success "License accepted for $kind $cr_name\n"
@@ -1503,6 +1613,6 @@ function is_supports_delegation() {
 function prepare_preview_mode() {
     mkdir -p ${PREVIEW_DIR}
     if [[ $PREVIEW_MODE -eq 1 ]]; then
-        OC_CMD="oc --dry-run=client" # a redirect to the file is needed too
+        OC_CMD="${OC} --dry-run=client" # a redirect to the file is needed too
     fi
 }
