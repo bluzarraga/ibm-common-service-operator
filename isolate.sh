@@ -34,6 +34,7 @@ CERT_MANAGER_MIGRATED="false"
 DEBUG=0
 BACKUP_LICENSING="false"
 PREVIEW_MODE=0
+IS_ISOLATED=0
 
 # ---------- Command variables ----------
 
@@ -44,16 +45,28 @@ BASE_DIR=$(cd $(dirname "$0")/$(dirname "$(readlink $0)") && pwd -P)
 LOG_FILE="isolate_log_$(date +'%Y%m%d%H%M%S').log"
 
 # preview mode directory
-PREVIEW_DIR="/tmp/preview"
+PREVIEW_DIR="/tmp/isolate-$(date +'%Y%m%d%H%M%S')-preview"
 
 # ---------- Main functions ----------
 
 . ${BASE_DIR}/cp3pt0-deployment/common/utils.sh
 
+trap 'error "Error occurred in function $FUNCNAME at line $LINENO"' ERR
+
 function main() {
+    echo "All arguments passed into the script: $@"
+
     while [ "$#" -gt "0" ]
     do
         case "$1" in
+        "--oc")
+            shift
+            OC=$1
+            ;;
+        "--yq")
+            shift
+            YQ=$1
+            ;;
         "-h"|"--help")
             usage
             exit 0
@@ -134,7 +147,7 @@ Usage: ${script} [OPTION]...
 Isolate and prepare Cloud Pak 2.0 Foundational Services for upgrade to or additional installation of Cloud Pak 3.0 Foundational Services
 
 Examples:
-# isolate the existing instance scope in ibm-common-services namespace and re-deploy cluster sigleton services in cs-control namespace
+# isolate the existing instance scope in ibm-common-services namespace and re-deploy cluster singleton services in cs-control namespace
 isolate.sh --original-cs-ns ibm-common-services --control-ns cs-control
 
 # remove cloudpak-1 and cloudpak-2 namespace from the existing instance scope in ibm-common-services
@@ -148,6 +161,8 @@ See https://www.ibm.com/docs/en/cloud-paks/foundational-services/4.0?topic=4x-is
 
 Options:
     -h, --help                    Display this help and exit
+    --oc string                   Optional. File path to oc CLI. Default uses oc in your PATH"
+    --yq string                   Optional. File path to yq CLI. Default uses yq in your PATH"
     --original-cs-ns              Required. Specify the namespace the original common services installation resides in
     --control-ns                  Required. Specify the control namespace value in the common-service-maps configmap
     --excluded-ns                 Optional. Specify namespaces to be excluded from the instance scope in original-cs-ns. Comma separated no spaces.
@@ -164,6 +179,18 @@ function prereq() {
 
     #verify one and only one cert manager is installed
     check_certmanager_count
+    check_command "${OC}"
+    check_command "${YQ}"
+    # Check yq version
+    check_yq_version
+
+    # Checking oc command logged in
+    user=$(${OC} whoami 2> /dev/null)
+    if [ $? -ne 0 ]; then
+        error "You must be logged into the OpenShift Cluster from the oc command line"
+    else
+        success "oc command logged in as ${user}"
+    fi
 
     return_value="reset"
     # ensure cs-operator is not installed in all namespace mode
@@ -180,8 +207,10 @@ function prereq() {
     cs_operator_found=false
 
     while read -r ns; do
-        cs_version=$("${OC}" get csv -n "${ns}" | grep common-service-operator | awk '{print $7}')
-        if [[ -n "${cs_version}" ]]; then
+        cs_version=$("${OC}" get csv -n "${ns}" | grep common-service-operator | awk '{print $7}' || echo "")
+        if [[ $cs_version == "" ]]; then
+            error "Failed to get ibm-common-service-operator csv in namespace ${ns}."
+        elif [[ -n "${cs_version}" ]]; then
             IFS='.' read -r major minor patch <<< "${cs_version}"
             if [[ ${major} -lt 3 || (${major} -eq 3 && ${minor} -lt 19) || (${major} -eq 3 && ${minor} -eq 19 && ${patch} -lt 9) ]]; then
                 error "Version of Foundational Services is $cs_version in namespace ${ns} does not meet the minimum version requirement. Upgrade to 3.19.9+"
@@ -219,7 +248,7 @@ data:
 ${yaml}
 EOF
 )"
-    echo "$object" | oc apply -f -
+    echo "$object" | ${OC} apply -f -
 }
 
 # create_empty_csmaps Creates a new common-service-maps configmap and inserts
@@ -376,12 +405,15 @@ function uninstall_singletons() {
     if [[ $csv != "fail" ]]; then
         "${OC}" delete -n "${MASTER_NS}" --ignore-not-found sub ibm-licensing-operator
         "${OC}" delete -n "${MASTER_NS}" --ignore-not-found csv "${csv}"
-        local is_deleted=$(("${OC}" delete -n "${MASTER_NS}" --ignore-not-found OperandBindInfo ibm-licensing-bindinfo --timeout=10s > /dev/null && echo "success" ) || echo "fail")
+        local is_deleted=$(("${OC}" delete -n "${MASTER_NS}" --ignore-not-found OperandBindInfo ibm-licensing-bindinfo --timeout=10s > /dev/null 2>&1 && echo "success" ) || echo "fail")
         if [[ $is_deleted == "fail" ]]; then
-            warning "Failed to delete OperandBindInfo, patching its finalizer to null..."
+            warning "Delete OperandBindInfo by patching its finalizer to null..."
             ${OC} patch -n "${MASTER_NS}" OperandBindInfo ibm-licensing-bindinfo --type="json" -p '[{"op": "remove", "path":"/metadata/finalizers"}]'
         fi
     fi
+    for ns in ${EXCLUDED_NS//,/ }; do
+        "${OC}" delete -n "${ns}" --ignore-not-found configmap ibm-license-service-reporter-bindinfo-ibm-license-service-reporter-zen
+    done
     "${OC}" delete -n "${MASTER_NS}" --ignore-not-found sub ibm-crossplane-operator-app
     "${OC}" delete -n "${MASTER_NS}" --ignore-not-found sub ibm-crossplane-provider-kubernetes-operator-app
     csv=$("${OC}" get -n "${MASTER_NS}" csv | (grep ibm-crossplane-operator || echo "fail") | awk '{print $1}')
@@ -395,10 +427,17 @@ function uninstall_singletons() {
 }
 
 function restart() {
+    # patch CR for management ingress before sclaing up ibm-common-service-operator deployment when CS CR exists and previous instance is not isolated
+    local isExists=$("${OC}" get commonservice common-service -n "${MASTER_NS}" --ignore-not-found)
+    if [[ ! -z "$isExists" ]] && [[ "${IS_ISOLATED}" == "0" ]]; then
+        patch_cs_cr_for_management_ingress
+    fi
+
     title "Scaling up ibm-common-service-operator deployment in ${MASTER_NS} namespace"
     msg "-----------------------------------------------------------------------"
     ${OC} scale deployment -n ${MASTER_NS} ibm-common-service-operator --replicas=1
     ${OC} scale deployment -n ${MASTER_NS} operand-deployment-lifecycle-manager --replicas=1
+    patch_management_ingress_cr
     check_CSCR "$MASTER_NS"
     success "Common Service Operator restarted."
 }
@@ -469,15 +508,47 @@ function migrate_lic_cms() {
 
 function backup_ibmlicensing() {
 
-    instance=`"${OC}" get IBMLicensing instance -o yaml --ignore-not-found | "${YQ}" '
-        with(.; del(.metadata.creationTimestamp) |
-        del(.metadata.managedFields) |
-        del(.metadata.resourceVersion) |
-        del(.metadata.uid) |
-        del(.status)
-        )
-    ' | sed -e 's/^/    /g'`
-cat << _EOF | oc apply -f -
+    ls_instance=$("${OC}" get IBMLicensing instance --ignore-not-found -o yaml)
+    if [[ -z "${ls_instance}" ]]; then
+        echo "No IBMLicensing instance found, skipping backup"
+        return
+    fi
+ 
+    # If LS connected to LicSvcReporter, set a template for sender configuration with url pointing to the IBM LSR docs
+    # And create an empty secret 'ibm-license-service-reporter-token' in LS_new_namespace to ensure that LS instance pod will start
+    local reporterURL=$(echo "${ls_instance}" | "${YQ}" '.spec.sender.reporterURL')
+    if [[ "$reporterURL" != "null" ]]; then
+        info "The current sender configuration for sending data from License Service to License Service Reporter:" 
+        echo "${ls_instance}" | "${YQ}" '.spec.sender'
+        
+        info "Resetting to a sender configuration template. Please follow the link ibm.biz/lsr_sender_config for more information"
+        exist=$("${OC}" get secret -n ${CONTROL_NS} --ignore-not-found | grep ibm-license-service-reporter-token > /dev/null || echo notexists)
+        if [[ $exist == "notexists" ]]; then
+            "${OC}" create secret generic -n ${CONTROL_NS} ibm-license-service-reporter-token --from-literal=token=''
+        fi
+
+        instance=`"${OC}" get IBMLicensing instance -o yaml --ignore-not-found | "${YQ}" '
+            with(.; del(.metadata.creationTimestamp) |
+            del(.metadata.managedFields) |
+            del(.metadata.resourceVersion) |
+            del(.metadata.uid) |
+            del(.status) | 
+            (.spec.sender.reporterURL)="https://READ_(ibm.biz/lsr_sender_config)" |
+            (.spec.sender.reporterSecretToken)="ibm-license-service-reporter-token"
+            )
+        ' | sed -e 's/^/    /g'`
+    else
+        instance=`"${OC}" get IBMLicensing instance -o yaml --ignore-not-found | "${YQ}" '
+            with(.; del(.metadata.creationTimestamp) |
+            del(.metadata.managedFields) |
+            del(.metadata.resourceVersion) |
+            del(.metadata.uid) |
+            del(.status)
+            )
+        ' | sed -e 's/^/    /g'`
+    fi
+    debug1 "instance: $instance"
+cat << _EOF | ${OC} apply -f -
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -488,13 +559,29 @@ data:
 ${instance}
 _EOF
 
+    if [[ $? -ne 0 ]]; then
+        warning "Failed to backup IBMLicensing instance"
+    else
+        success "IBMLicensing instance is backed up"
+    fi
 }
 
 function restore_ibmlicensing() {
 
+    is_exist=$("${OC}" get cm ibmlicensing-instance-bak -n ${CONTROL_NS} --ignore-not-found)
+    if [[ -z "${is_exist}" ]]; then
+        warning "No IBMLicensing instance backup found, skipping restore"
+        return
+    fi
     # extracts the previously saved IBMLicensing CR from ConfigMap and creates the IBMLicensing CR
     "${OC}" get cm ibmlicensing-instance-bak -n ${CONTROL_NS} -o yaml --ignore-not-found | "${YQ}" .data | sed -e 's/.*ibmlicensing.yaml.*//' | 
-    sed -e 's/^  //g' | oc apply -f -
+    sed -e 's/^  //g' | "${OC}" apply -f -
+    
+    if [[ $? -ne 0 ]]; then
+        warning "Failed to restore IBMLicensing instance"
+    else
+        success "IBMLicensing instance is restored"
+    fi
 
 }
 
@@ -517,7 +604,7 @@ function export_k8s_list_yaml() {
 function check_CSCR() {
     local ns=$1
 
-    local retries=30
+    local retries=60
     local sleep_time=15
     local total_time_mins=$(( sleep_time * retries / 60))
     info "Waiting for IBM Common Services CR is Succeeded"
@@ -528,7 +615,7 @@ function check_CSCR() {
             error "Timeout after ${total_time_mins} minutes waiting for IBM Common Services CR is Succeeded"
         fi
 
-        local phase=$(oc get commonservice common-service -o jsonpath='{.status.phase}' -n ${ns})
+        local phase=$(${OC} get commonservice common-service -o jsonpath='{.status.phase}' -n ${ns})
 
         if [[ "${phase}" != "Succeeded" ]]; then
             retries=$(( retries - 1 ))
@@ -536,7 +623,7 @@ function check_CSCR() {
             sleep ${sleep_time}
         else
             msg "-----------------------------------------------------------------------"    
-            success "Ready use"
+            success "IBM Common Services CR is Succeeded, Ready to proceed"
             break
         fi
     done
@@ -559,8 +646,14 @@ function isolate_odlm() {
     count=0
     for name in $env_range
     do
-        #If isolated mode, set value to true. Otherwise keep name value pairs unchanged.
+        # If isolated mode, set value to true. Otherwise keep name value pairs unchanged.
         if [[ $name == "ISOLATED_MODE" ]]; then
+            # Get the value to check if it is already set to true
+            existing_value=$(${OC} get subscription.operators.coreos.com ${sub_name} -n ${ns} -o yaml | "${YQ}" '.spec.config.env['"${count}"'].value')
+            if [[ $existing_value == "true" ]]; then
+                info "isolated mode already set to true in ODLM subscription..."
+                IS_ISOLATED=1
+            fi
             env_value="true"
         else
             env_value=$(${OC} get subscription.operators.coreos.com ${sub_name} -n ${ns} -o yaml | "${YQ}" '.spec.config.env['"${count}"'].value')
@@ -689,7 +782,7 @@ function check_if_certmanager_deployed() {
 
     if [[ $deployed == "false" ]]; then
         info "Cert manager not requested in scope, deploying..."
-        cat <<EOF > tmp-opreq.yaml
+        cat <<EOF > /tmp/tmp-opreq.yaml
 apiVersion: operator.ibm.com/v1alpha1
 kind: OperandRequest
 metadata:
@@ -707,8 +800,8 @@ spec:
       registryNamespace: $MASTER_NS
 EOF
 
-    oc apply -f tmp-opreq.yaml
-    rm -f tmp-opreq.yaml
+    ${OC} apply -f /tmp/tmp-opreq.yaml
+    rm -f /tmp/tmp-opreq.yaml
     fi
 
 }
@@ -750,16 +843,18 @@ function wait_for_certmanager() {
 
 function check_certmanager_count(){
     info "Verifying cert manager is deployed"
-    csv_count=$(${OC} get csv -A | grep "cert-manager"| wc -l | tr -d " " || echo "")
+    csv_count=$(${OC} get csv -A | awk '{print $2}' | grep "cert-manager"| wc -l | tr -d " " || echo "")
     debug1 "cert manager csv count output: $csv_count"
     if [[ "$csv_count" == "0" ]] || [[ "$csv_count" == "" ]]; then
         error "Missing a cert-manager"
     fi
     # if installed in all namespace mode or alongside cp2 cert manager, 
     # csv_count will be >1, need to check for multiple deployments
-    if [[ $csv_count > 1 ]]; then
-        webhook_deployments=$(${OC} get deploy -A --no-headers --ignore-not-found | grep "cert-manager-webhook" -c)
-        if [[ $webhook_deployments != "1" ]]; then
+    if [[ $csv_count > 1 ]]; then 
+        webhook_deployments=$(${OC} get deploy -A --no-headers --ignore-not-found | grep "cert-manager-webhook" -c || echo "")
+        if [[ $webhook_deployments == "" ]]; then
+            error "Failed to cert-manager-webhook deployment"
+        elif [[ $webhook_deployments != "1" ]]; then
             error "Multiple cert-managers found. Only one should be installed per cluster"
         fi
     fi
@@ -800,28 +895,160 @@ function isolate_license_service_reporter(){
 
 function wait_for_nss_update() {
     local expected_ns_list=${1//$'\n'/ }
+    local retries=5
+    local wait_time=20
+    
     wait_for_nss_exist
     
-    local actual_ns_list=$(${OC} get cm namespace-scope -n ${MASTER_NS} -o yaml | ${YQ} '.data.namespaces')
-    actual_ns_list=$(echo "${actual_ns_list//,/ }" | xargs -n1 | sort | xargs)
-    expected_ns_list=$(echo "${expected_ns_list}" | xargs -n1 | sort | xargs)
-    debug1 "expected ns list: $expected_ns_list"
-    debug1 "actual ns list: $actual_ns_list"
-    if [[ "${expected_ns_list}" == "${actual_ns_list}" ]]; then
-        success "Namespaces in namespace-scope configmap match expected output."
-    else
-        error "Namespaces in namespace-scope configmap do not match expected output."
-    fi
+    for (( i=1; i<=$retries; i++ )); do
+
+        local actual_ns_list=$(${OC} get cm namespace-scope -n ${MASTER_NS} -o yaml | ${YQ} '.data.namespaces')
+        actual_ns_list=$(echo "${actual_ns_list//,/ }" | xargs -n1 | sort | xargs)
+        expected_ns_list=$(echo "${expected_ns_list}" | xargs -n1 | sort | xargs)
+        
+        debug1 "expected ns list: $expected_ns_list"
+        debug1 "actual ns list: $actual_ns_list"
+        
+        if [[ "${expected_ns_list}" == "${actual_ns_list}" ]]; then
+            success "Namespaces in namespace-scope configmap match expected output."
+            break
+        else
+            if [[ $i -lt $retries ]]; then
+                info "Namespaces in namespace-scope configmap do not match expected output. Retrying in $wait_time seconds..."
+                sleep $wait_time
+            else
+                error "Namespaces in namespace-scope configmap do not match expected output after $retries retries."
+            fi
+        fi
+    done
 }
 
 function wait_for_nss_exist() {
-    local condition="${OC} get cm namespace-scope -n ${MASTER_NS} || true"
+    local condition="${OC} get cm namespace-scope -n ${MASTER_NS} --ignore-not-found || true"
     local retries=10
     local sleep_time=15
     local total_time_mins=$(( sleep_time * retries / 60))
     local wait_message="Waiting for configmap namespace-scope in namespace ${MASTER_NS} to be created ..."
     local success_message="Namespace-scope configmap created in ${MASTER_NS}."
     local error_message="Timeout after ${total_time_mins} minutes waiting for namespace-scope configmap to be created."
+    wait_for_condition "${condition}" ${retries} ${sleep_time} "${wait_message}" "${success_message}" "${error_message}"
+}
+
+function patch_cs_cr_for_management_ingress() {
+    title "Updating commonservice common-service in namespace ${MASTER_NS} for management ingress CR ..."
+    "${OC}" get commonservice common-service -n "${MASTER_NS}" -o yaml > /tmp/tmp_cs_cr.yaml
+
+    local is_exist_in_cs=$("${YQ}" eval '.spec.services[].name' /tmp/tmp_cs_cr.yaml | grep "ibm-management-ingress-operator" || echo "false")
+    if [[ "${is_exist_in_cs}" == "false" ]]; then
+        "${YQ}" -i eval '.spec.services += [{"name": "ibm-management-ingress-operator", "spec": {"managementIngress": {"multipleInstancesEnabled": false}}}]' /tmp/tmp_cs_cr.yaml
+    else
+        info "ibm-management-ingress-operator already exists in CS CR .spec.services, updating it ..."
+        "${YQ}" -i eval '(.spec.services[] |= select(.name == "ibm-management-ingress-operator").spec.managementIngress.multipleInstancesEnabled = false)' /tmp/tmp_cs_cr.yaml
+    fi
+  
+    local retries=10
+    local sleep_time=5
+    local total_time_mins=$(( sleep_time * retries / 60))
+    local wait_message="Waiting for commonservice common-service in namespace ${MASTER_NS} to be updated for management ingress CR ..."
+    local success_message="Commonservice common-service updated in ${MASTER_NS} for management ingress CR."
+    local error_message="Timeout after ${total_time_mins} minutes waiting for commonservice common-service to be updated for management ingress CR."
+    while true; do
+        if [[ ${retries} -eq 0 ]]; then
+            rm -f /tmp/tmp_cs_cr.yaml
+            error "${error_message}"
+        fi
+
+        local result=$("${OC}" apply -n "${MASTER_NS}" -f /tmp/tmp_cs_cr.yaml 2>&1 || echo "fail")
+        if [[ "${result}" == "fail" ]]; then
+            retries=$(( retries - 1 ))
+            info "RETRYING: ${wait_message} (${retries} left)"
+            sleep ${sleep_time}
+        else
+            success "${success_message}"
+            break
+        fi
+    done
+    rm -f /tmp/tmp_cs_cr.yaml
+}
+
+function patch_opconfig_for_management_ingress() {
+    title "Updating operandconfig common-service in namespace ${MASTER_NS} for management ingress CR ..."
+    "${OC}" get operandconfig common-service -n "${MASTER_NS}" -o yaml > tmp_oc_cr.yaml
+
+    local is_exist_in_opcon=$("${YQ}" eval '.spec.services[].name' tmp_oc_cr.yaml | grep "ibm-management-ingress-operator" || echo "false")
+    if [[ "${is_exist_in_opcon}" == "false" ]]; then
+        "${YQ}" -i eval '.spec.services += [{"name": "ibm-management-ingress-operator", "spec": {"managementIngress": {"multipleInstancesEnabled": false}}}]' tmp_oc_cr.yaml
+    else
+        info "ibm-management-ingress-operator already exists in operandconfig CR .spec.services, updating it ..."
+        "${YQ}" -i eval '(.spec.services[] |= select(.name == "ibm-management-ingress-operator").spec.managementIngress.multipleInstancesEnabled = false)' tmp_oc_cr.yaml
+    fi
+
+    local retries=12
+    local sleep_time=5
+    local total_time_mins=$(( sleep_time * retries / 60))
+    local wait_message="Waiting for operandconfig common-service in namespace ${MASTER_NS} to be updated for management ingress CR ..."
+    local success_message="Operandconfig common-service updated in ${MASTER_NS} for management ingress CR."
+    local error_message="Timeout after ${total_time_mins} minutes waiting for operandconfig common-service to be updated for management ingress CR."
+    while true; do
+        if [[ ${retries} -eq 0 ]]; then
+            rm -f tmp_oc_cr.yaml
+            error "${error_message}"
+        fi
+
+        local result=$("${OC}" apply -n "${MASTER_NS}" -f tmp_oc_cr.yaml 2>&1 || echo "fail")
+        if [[ "${result}" == "fail" ]]; then
+            retries=$(( retries - 1 ))
+            info "RETRYING: ${wait_message} (${retries} left)"
+            sleep ${sleep_time}
+        else
+            success "${success_message}"
+            break
+        fi
+    done
+    rm -f tmp_oc_cr.yaml
+}
+
+function wait_for_management_ingress_be_patched() {
+    local condition="${OC} get managementingress default -n ${MASTER_NS} -o jsonpath='{.spec.multipleInstancesEnabled}' | grep 'false' || true"
+    local retries=10
+    local sleep_time=5
+    local total_time_mins=$(( sleep_time * retries / 60))
+    local wait_message="Waiting for managementingress default in namespace ${MASTER_NS} to be patched with multipleInstancesEnabled false ..."
+    local success_message="Managementingress default in ${MASTER_NS} patched with multipleInstancesEnabled false."
+    local error_message="Timeout after ${total_time_mins} minutes waiting for managementingress default to be patched with multipleInstancesEnabled false."
+    wait_for_condition "${condition}" ${retries} ${sleep_time} "${wait_message}" "${success_message}" "${error_message}"
+}
+
+function patch_management_ingress_cr() {
+    if [[ "${IS_ISOLATED}" == "0" ]]; then
+        wait_for_cs_cr_exist
+        patch_cs_cr_for_management_ingress
+        wait_for_opconfig_exist
+        patch_opconfig_for_management_ingress
+    else
+        warning "Instance has been isolated previously, skipping patching commonservice and operandconfig for management ingress CR..."
+    fi
+}
+
+function wait_for_cs_cr_exist() {
+    local condition="${OC} get commonservice common-service -n ${MASTER_NS} --ignore-not-found || true"
+    local retries=20
+    local sleep_time=5
+    local total_time_mins=$(( sleep_time * retries / 60))
+    local wait_message="Waiting for commonservice common-service in namespace ${MASTER_NS} to be created ..."
+    local success_message="Commonservice common-service created in ${MASTER_NS}."
+    local error_message="Timeout after ${total_time_mins} minutes waiting for commonservice common-service to be created."
+    wait_for_condition "${condition}" ${retries} ${sleep_time} "${wait_message}" "${success_message}" "${error_message}"
+}
+
+function wait_for_opconfig_exist() {
+    local condition="${OC} get operandconfig common-service -n ${MASTER_NS} --ignore-not-found || true"
+    local retries=60
+    local sleep_time=10
+    local total_time_mins=$(( sleep_time * retries / 60))
+    local wait_message="Waiting for operandconfig common-service in namespace ${MASTER_NS} to be created ..."
+    local success_message="Operandconfig common-service created in ${MASTER_NS}."
+    local error_message="Timeout after ${total_time_mins} minutes waiting for operandconfig common-service to be created."
     wait_for_condition "${condition}" ${retries} ${sleep_time} "${wait_message}" "${success_message}" "${error_message}"
 }
 
@@ -856,6 +1083,15 @@ function prev_fail_check() {
         wait_for_certmanager "${ns_list}"
     fi
 
+}
+
+function check_yq() {
+    yq_version=$("${YQ}" --version | awk '{print $NF}' | sed 's/^v//')
+    yq_minimum_version=4.18.1
+
+    if [ "$(printf '%s\n' "$yq_minimum_version" "$yq_version" | sort -V | head -n1)" != "$yq_minimum_version" ]; then 
+        error "yq version $yq_version must be at least $yq_minimum_version or higher.\nInstructions for installing/upgrading yq are available here: https://github.com/marketplace/actions/yq-portable-yaml-processor"
+    fi
 }
 
 function msg() {

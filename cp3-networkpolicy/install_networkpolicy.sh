@@ -14,17 +14,29 @@
 # script base directory
 BASE_DIR=$(cd $(dirname "$0")/$(dirname "$(readlink $0)") && pwd -P)
 
-# common-services namespace
+# operand namespace
 CS_NAMESPACE=
 
 # operators namespace
 OPERATORS_NAMESPACE=
+
+# zen namespace
+ZEN_NAMESPACE=
 
 # cert-manager namespace
 CERT_NAMESPACE=
 
 # license-service namespace
 LICSVC_NAMESPACE=
+
+# license-service-reporter namespace
+LICSVC_REPORTER_NAMESPACE=
+
+# flink namespace
+FLINK_NAMESPACE=
+
+# opensearch namespace
+OPENSEARCH_NAMESPACE=
 
 # is uninstall flag?
 UNINSTALL=
@@ -95,13 +107,17 @@ function print_usage() {
     echo "Install IBM Common Services NetworkPolicies"
     echo ""
     echo "Options:"
-    echo "   -n, --namespace string       IBM Common Services operand namespace. Default is same namespace for both operators and services"
-    echo "   -o, --operators-namespace string   Operators namespace. Default is same namespace as IBM Common Services"
-    echo "   -c, --cert-manager-namespace string   Cert-manager namespace. Default is same namespace as IBM Common Services"
-    echo "   -l, --licensing-namespace string   License Service namespace. Default is same namespace as IBM Common Services"
-    echo "   -u, --uninstall              Uninstall IBM Common Services Network Policies"
-    echo "   -e, --egress                 Deploy egress NetworkPolicies"
-    echo "   -h, --help                   Print usage information"
+    echo "   -n, --namespace string                               IBM Common Services operand namespace. No default value"
+    echo "   -o, --operators-namespace string                     Operators namespace. Default is same namespace as IBM Common Services operand namespace"
+    echo "   -z, --zen-namespace string                           Zen namespace. Default is same namespace as IBM Common Services operand namespace"
+    echo "   -c, --cert-manager-namespace string                  Cert-manager namespace. No default value"
+    echo "   -l, --licensing-namespace string                     License Service namespace. No default value"
+    echo "   -lsr, --licensing-svc-reporter-namespace string      License Service Reporter namespace. No default value"
+    echo "   -flink, --flink-namespace string                     Flink namespace. No default value"
+    echo "   -opensearch, --opensearch-namespace string           Opensearch namespace. No default value"
+    echo "   -u, --uninstall                                      Uninstall IBM Common Services Network Policies"
+    echo "   -e, --egress                                         Deploy egress NetworkPolicies"
+    echo "   -h, --help                                           Print usage information"
     echo ""
 }
 
@@ -117,6 +133,10 @@ function parse_arguments() {
             shift
             OPERATORS_NAMESPACE=$1
             ;;
+        -z | --zen-namespace)
+            shift
+            ZEN_NAMESPACE=$1
+            ;;
         -c | --cert-manager-namespace)
             shift
             CERT_NAMESPACE=$1
@@ -125,12 +145,22 @@ function parse_arguments() {
             shift
             LICSVC_NAMESPACE=$1
             ;;
-        -u | --uninstall)
+        -lsr | --licensing-svc-reporter-namespace)
             shift
+            LICSVC_REPORTER_NAMESPACE=$1
+            ;;
+        -flink | --flink-namespace)
+            shift
+            FLINK_NAMESPACE=$1
+            ;;
+        -opensearch | --opensearch-namespace)
+            shift
+            OPENSEARCH_NAMESPACE=$1
+            ;;
+        -u | --uninstall)
             UNINSTALL=true
             ;;
         -e | --egress)
-            shift
             EGRESS=true
             ;;
         -h | --help)
@@ -165,7 +195,7 @@ function check_prereqs() {
         success "oc command logged in as ${user}"
     fi
 
-    # checking for CS_NAMESPACE
+    # checking for CS_NAMESPACE, if CS_NAMESPACE is not specified, exit
     if [[ ! -z "${CS_NAMESPACE}" ]]; then
         # check existence of CS_NAMESPACE
         cs_namespace_exists=$(oc get project "${CS_NAMESPACE}" 2> /dev/null)
@@ -173,13 +203,8 @@ function check_prereqs() {
             info "Creating IBM Common Services namespace: ${CS_NAMESPACE}"
             oc create namespace "${CS_NAMESPACE}"
         fi
-        
-        # checking for ibm-common-service-operator in CS_NAMESPACE
-        if [[ -z "$(oc -n ${OPERATORS_NAMESPACE} get csv --ignore-not-found | grep 'ibm-common-service-operator')" ]]; then
-            info "IBM Common Services are not installed in namespace ${OPERATORS_NAMESPACE}"
-        else
-            success "IBM Common Services found in namespace ${OPERATORS_NAMESPACE}"
-        fi
+    else
+        error "IBM Common Services operand namespace not specified"
     fi
 
     # if OPERATORS_NAMESPACE is not specified, use CS_NAMESPACE
@@ -194,6 +219,47 @@ function check_prereqs() {
         fi
     fi
 
+    # checking for ibm-common-service-operator in CS_NAMESPACE
+    if [[ -z "$(oc -n ${OPERATORS_NAMESPACE} get csv --ignore-not-found | grep 'ibm-common-service-operator')" ]]; then
+        info "IBM Common Services are not installed in namespace ${OPERATORS_NAMESPACE}"
+    else
+        success "IBM Common Services found in namespace ${OPERATORS_NAMESPACE}"
+    fi
+
+    # if ZEN_NAMESPACE is not specified, use CS_NAMESPACE
+    if [[ -z "${ZEN_NAMESPACE}" && ! -z "${CS_NAMESPACE}" ]]; then
+        ZEN_NAMESPACE=${CS_NAMESPACE}
+
+        # check existence of ZEN_NAMESPACE
+        zen_namespace_exists=$(oc get project "${ZEN_NAMESPACE}" 2> /dev/null)
+        if [ $? -ne 0 ]; then
+            info "Creating Zen namespace: ${ZEN_NAMESPACE}"
+            oc create namespace "${ZEN_NAMESPACE}"
+        fi
+    fi
+
+    # if FLINK_NAMESPACE specified but not exist, create it
+    if [[ ! -z "${FLINK_NAMESPACE}" ]]; then
+        # check existence of FLINK_NAMESPACE
+        flink_namespace_exists=$(oc get project "${FLINK_NAMESPACE}" 2> /dev/null)
+        if [ $? -ne 0 ]; then
+            info "Creating IBM Common Services namespace: ${FLINK_NAMESPACE}"
+            oc create namespace "${FLINK_NAMESPACE}"
+        fi
+    fi
+
+    # if opensearch is not specified, use FLINK_NAMESPACE
+    if [[ -z "${OPENSEARCH_NAMESPACE}" && ! -z "${FLINK_NAMESPACE}" ]]; then
+        OPENSEARCH_NAMESPACE=${FLINK_NAMESPACE}
+
+        # check existence of OPENSEARCH_NAMESPACE
+        opensearch_namespace_exists=$(oc get project "${OPENSEARCH_NAMESPACE}" 2> /dev/null)
+        if [ $? -ne 0 ]; then
+            info "Creating Opensearch namespace: ${OPENSEARCH_NAMESPACE}"
+            oc create namespace "${OPENSEARCH_NAMESPACE}"
+        fi
+    fi
+
 }
 
 function install_networkpolicy() {
@@ -202,6 +268,12 @@ function install_networkpolicy() {
 
     info "Using IBM Common Services namespace: ${CS_NAMESPACE}"
     info "Using operators namespace: ${OPERATORS_NAMESPACE}"
+    info "Using Zen namespace: ${ZEN_NAMESPACE}"
+    info "Using cert-manager namespace: ${CERT_NAMESPACE}"
+    info "Using license-service namespace: ${LICSVC_NAMESPACE}"
+    info "Using license-service-reporter namespace: ${LICSVC_REPORTER_NAMESPACE}"
+    info "Using flink namespace: ${FLINK_NAMESPACE}"
+    info "Using opensearch namespace: ${OPENSEARCH_NAMESPACE}"
 
     if [[ ${EGRESS} == "true" ]]; then
         BASE_DIR="${BASE_DIR}/egress"
@@ -212,14 +284,14 @@ function install_networkpolicy() {
     if [[ ! -z "${CS_NAMESPACE}" ]]; then
         for policyfile in `ls -1 ${BASE_DIR}/services/*.yaml`; do
             info "Installing `basename ${policyfile}` ..."
-            cat ${policyfile} | sed -e "s/csNamespace/${CS_NAMESPACE}/g" | sed -e "s/opNamespace/${OPERATORS_NAMESPACE}/g" | oc apply -f -
+            cat ${policyfile} | sed -e "s/csNamespace/${CS_NAMESPACE}/g" | sed -e "s/opNamespace/${OPERATORS_NAMESPACE}/g" | sed -e "s/zenNamespace/${ZEN_NAMESPACE}/g" | oc apply -f -
         done
     fi
 
     if [[ ! -z "${OPERATORS_NAMESPACE}" ]]; then    
         for policyfile in `ls -1 ${BASE_DIR}/operators/*.yaml`; do
             info "Installing `basename ${policyfile}` ..."
-            cat ${policyfile} | sed -e "s/csNamespace/${CS_NAMESPACE}/g" | sed -e "s/opNamespace/${OPERATORS_NAMESPACE}/g" | oc apply -f -
+            cat ${policyfile} | sed -e "s/csNamespace/${CS_NAMESPACE}/g" | sed -e "s/opNamespace/${OPERATORS_NAMESPACE}/g" | sed -e "s/zenNamespace/${ZEN_NAMESPACE}/g" | oc apply -f -
         done
     fi
 
@@ -236,6 +308,40 @@ function install_networkpolicy() {
         for policyfile in `ls -1 ${BASE_DIR}/license-service/*.yaml`; do
             info "Installing `basename ${policyfile}` ..."
             cat ${policyfile} | sed -e "s/licNamespace/${LICSVC_NAMESPACE}/g" | oc apply -f -
+        done
+    fi
+
+    # Installing license-service-reporter policies
+    if [[ ! -z "${LICSVC_REPORTER_NAMESPACE}" ]]; then
+        for policyfile in `ls -1 ${BASE_DIR}/license-service-reporter/*.yaml`; do
+            info "Installing `basename ${policyfile}` ..."
+            cat ${policyfile} | sed -e "s/lsrNamespace/${LICSVC_REPORTER_NAMESPACE}/g" | oc apply -f -
+        done
+    fi
+
+
+    # Installing flink policies
+    if [[ ! -z "${FLINK_NAMESPACE}" ]]; then
+        for policyfile in `ls -1 ${BASE_DIR}/flink/*.yaml`; do
+            info "Installing `basename ${policyfile}` ..."
+            cat ${policyfile} | sed -e "s/flinkNamespace/${FLINK_NAMESPACE}/g" | sed -e "s/opNamespace/${OPERATORS_NAMESPACE}/g" | oc apply -f -
+        done
+    fi
+
+
+    # Installing opensearch policies
+    if [[ ! -z "${OPENSEARCH_NAMESPACE}" ]]; then
+        for policyfile in `ls -1 ${BASE_DIR}/opensearch/*.yaml`; do
+            info "Installing `basename ${policyfile}` ..."
+            cat ${policyfile} | sed -e "s/opensearchNamespace/${OPENSEARCH_NAMESPACE}/g" | sed -e "s/opNamespace/${OPERATORS_NAMESPACE}/g" | oc apply -f -
+        done
+    fi
+
+    # Installing zen policies
+    if [[ ! -z "${ZEN_NAMESPACE}" ]]; then
+        for policyfile in `ls -1 ${BASE_DIR}/zen/*.yaml`; do
+            info "Installing `basename ${policyfile}` ..."
+            cat ${policyfile} | sed -e "s/zenNamespace/${ZEN_NAMESPACE}/g" | sed -e "s/csNamespace/${CS_NAMESPACE}/g" | sed -e "s/opNamespace/${OPERATORS_NAMESPACE}/g" | oc apply -f -
         done
     fi
 
@@ -259,6 +365,22 @@ function delete_networkpolicy() {
 
     if [[ ! -z "${LICSVC_NAMESPACE}" ]]; then
         oc delete networkpolicies -n ${LICSVC_NAMESPACE} --selector=component=cpfs3
+    fi
+
+    if [[ ! -z "${LICSVC_REPORTER_NAMESPACE}" ]]; then
+        oc delete networkpolicies -n ${LICSVC_REPORTER_NAMESPACE} --selector=component=cpfs3
+    fi
+
+    if [[ ! -z "${FLINK_NAMESPACE}" ]]; then
+        oc delete networkpolicies -n ${FLINK_NAMESPACE} --selector=component=cpfs3
+    fi
+
+    if [[ ! -z "${OPENSEARCH_NAMESPACE}" ]]; then
+        oc delete networkpolicies -n ${OPENSEARCH_NAMESPACE} --selector=component=cpfs3
+    fi
+
+    if [[ ! -z "${ZEN_NAMESPACE}" ]]; then
+        oc delete networkpolicies -n ${ZEN_NAMESPACE} --selector=component=cpfs3
     fi
 
 }

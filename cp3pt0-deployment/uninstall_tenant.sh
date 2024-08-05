@@ -8,12 +8,15 @@
 # This is an internal component, bundled with an official IBM product. 
 # Please refer to that particular license for additional information. 
 
+set -o nounset
+
 # ---------- Command arguments ----------
 
 OC=oc
 YQ=yq
 TENANT_NAMESPACES=""
 OPERATOR_NS_LIST=""
+CONTROL_NS=""
 FORCE_DELETE=0
 DEBUG=0
 
@@ -47,6 +50,10 @@ function main() {
 }
 
 function parse_arguments() {
+    script_name=`basename ${0}`
+    echo "All arguments passed into the ${script_name}: $@"
+    echo ""
+
     # process options
     while [[ "$@" != "" ]]; do
         case "$1" in
@@ -107,6 +114,8 @@ function pre_req() {
     fi
 
     check_command "${OC}"
+    check_command "${YQ}"
+    check_yq_version
 
     # Checking oc command logged in
     user=$(${OC} whoami 2> /dev/null)
@@ -315,13 +324,13 @@ function update_namespaceMapping() {
     namespace=$1
     title "Updating common-service-maps $namespace"
     msg "-----------------------------------------------------------------------"
-    local current_yaml=$("${OC}" get -n kube-public cm common-service-maps -o yaml | yq '.data.["common-service-maps.yaml"]')
-    local isExist=$(echo "$current_yaml" | yq '.namespaceMapping[] | select(.map-to-common-service-namespace == "'$namespace'")')
+    local current_yaml=$("${OC}" get -n kube-public cm common-service-maps -o yaml | ${YQ} '.data.["common-service-maps.yaml"]')
+    local isExist=$(echo "$current_yaml" | ${YQ} '.namespaceMapping[] | select(.map-to-common-service-namespace == "'$namespace'")')
 
     if [ "$isExist" ]; then
         info "The map-to-common-service-namespace: $namespace, exist in common-service-maps"
         info "Deleting this tenant in common-service-maps"
-        updated_yaml=$(echo "$current_yaml" | yq 'del(.namespaceMapping[] | select(.map-to-common-service-namespace == "'$namespace'"))')
+        updated_yaml=$(echo "$current_yaml" | ${YQ} 'del(.namespaceMapping[] | select(.map-to-common-service-namespace == "'$namespace'"))')
         local padded_yaml=$(echo "$updated_yaml" | awk '$0="    "$0')
         update_cs_maps "$padded_yaml"
     else
@@ -348,37 +357,41 @@ data:
 ${yaml}
 EOF
 )"
-    echo "$object" | oc apply -f -
+    echo "$object" | ${OC} apply -f -
 }
 
 # check if we need to cleanup contorl namespace and clean it
 function cleanup_cs_control() {
-    local current_yaml=$("${OC}" get -n kube-public cm common-service-maps -o yaml | yq '.data.["common-service-maps.yaml"]')
-    local isExist=$(echo "$current_yaml" | yq '.namespaceMapping[] | has("map-to-common-service-namespace")' )
+    local current_yaml=$("${OC}" get -n kube-public cm common-service-maps -o yaml | ${YQ} '.data.["common-service-maps.yaml"]')
+    local isExist=$(echo "$current_yaml" | ${YQ} '.namespaceMapping[] | has("map-to-common-service-namespace")' )
     if [ "$isExist" ]; then
         info "map-to-common-service-namespace exist in common-service-maps, don't clean up control namespace"
     else
         title "Clean up control namespace"
         msg "-----------------------------------------------------------------------"
         get_control_namespace
-        # cleanup namespaceScope in Control namespace
-        cleanup_NamespaceScope $CONTROL_NS
-        # cleanup webhook
-        cleanup_webhook $CONTROL_NS ""
-        # cleanup secretshare
-        cleanup_secretshare $CONTROL_NS ""
-        # cleanup crossplane    
-        cleanup_crossplane
-        # delete common-service-maps 
-        ${OC} delete configmap common-service-maps -n kube-public
-        # delete namespace
-        ${OC} delete --ignore-not-found ns "$CONTROL_NS" --timeout=30s
-        if [ $? -ne 0 ] || [ $FORCE_DELETE -eq 1 ]; then
-            warning "Failed to delete namespace $CONTROL_NS, force deleting remaining resources..."
-            remove_all_finalizers $ns && success "Namespace $CONTROL_NS is deleted successfully."
-        fi
+        if [[ "${CONTROL_NS}" == "null" ]] || [[ "${CONTROL_NS}" == "" ]]; then
+            info "control_namespace not found"
+        else
+            # cleanup namespaceScope in Control namespace
+            cleanup_NamespaceScope $CONTROL_NS
+            # cleanup webhook
+            cleanup_webhook $CONTROL_NS ""
+            # cleanup secretshare
+            cleanup_secretshare $CONTROL_NS ""
+            # cleanup crossplane    
+            cleanup_crossplane
+            # delete common-service-maps 
+            ${OC} delete configmap common-service-maps -n kube-public
+            # delete namespace
+            ${OC} delete --ignore-not-found ns "$CONTROL_NS" --timeout=30s
+            if [ $? -ne 0 ] || [ $FORCE_DELETE -eq 1 ]; then
+                warning "Failed to delete namespace $CONTROL_NS, force deleting remaining resources..."
+                remove_all_finalizers $ns && success "Namespace $CONTROL_NS is deleted successfully."
+            fi
 
-        success "Control namespace: ${CONTROL_NS} is cleanup"
+            success "Control namespace: ${CONTROL_NS} is cleanup"
+        fi
     fi
 
 }
