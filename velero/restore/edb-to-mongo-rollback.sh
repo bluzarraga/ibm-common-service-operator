@@ -267,6 +267,9 @@ function loadmongo() {
     # delete mongo-backup pod just in case it has error
     MONGO_DATA_POD=$(${OC} get po -l foundationservices.cloudpak.ibm.com=mongo-data --no-headers --ignore-not-found -n $SERVICES_NAMESPACE | awk '{print $1}')
     echo $MONGO_DATA_POD
+    
+    #TODO need to genericize the pod we wait on to come ready, its looking for the same pod hash to come ready when it will change after deleting
+    
     wait_for_pod_delete $SERVICES_NAMESPACE $MONGO_DATA_POD
 
     # create mongo-restore job
@@ -838,6 +841,7 @@ spec:
   selfSigned: {}
 EOF
     #ibm-cpp-config-cm.yaml
+    #TODO need to either update these values or check to see if this cm already exists since we may overwrite something unecessarily
     cat << EOF | ${OC} apply -f -
 kind: ConfigMap
 apiVersion: v1
