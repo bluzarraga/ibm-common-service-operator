@@ -1,0 +1,80 @@
+apiVersion: spp-data-protection.isf.ibm.com/v1alpha1
+kind: Recipe
+metadata:
+  name: cs-config-sync-recipe
+  namespace: ibm-spectrum-fusion-ns
+spec:
+  appType: common-service
+  groups:
+    - name: cpfs-config-data-sync-group
+      type: resource
+      includeClusterResources: true
+      labelSelector: foundationservices.cloudpak.ibm.com
+      includedResourceTypes:
+        - commonservices.operator.ibm.com
+        - customresourcedefinitions.apiextensions.k8s.io
+        - namespacescopes.operator.ibm.com
+        - roles
+        - rolebindings
+        - serviceaccounts
+        - subscriptions.operators.coreos.com
+        - configmaps
+        - zenservices.zen.cpd.ibm.com
+        - operandrequests.operator.ibm.com
+    - includedResourceTypes:
+        - commonservices.operator.ibm.com
+      labelSelector: foundationservices.cloudpak.ibm.com=commonservice
+      name: commonservice-cr
+      type: resource
+      restoreOverwriteResources: true
+      backupRef: cpfs-config-data-sync-group
+    - includedResourceTypes:
+        - namespacescopes.operator.ibm.com
+        - customresourcedefinitions.apiextensions.k8s.io
+        - roles
+        - rolebindings
+        - serviceaccounts
+        - subscriptions.operators.coreos.com
+        - configmaps
+      labelSelector: foundationservices.cloudpak.ibm.com=nss
+      name: namespacescope
+      type: resource
+      restoreOverwriteResources: true
+      backupRef: cpfs-config-data-sync-group
+    - includeClusterResources: true
+      includedResourceTypes:
+        - zenservices.zen.cpd.ibm.com
+        - customresourcedefinitions.apiextensions.k8s.io
+      labelSelector: foundationservices.cloudpak.ibm.com=zen
+      name: zenservice
+      type: resource
+      restoreOverwriteResources: true
+      backupRef: cpfs-config-data-sync-group
+    - includedResourceTypes:
+        - operandrequests.operator.ibm.com
+      labelSelector: foundationservices.cloudpak.ibm.com=operand
+      name: operand-requests
+      restoreOverwriteResources: true
+      type: resource
+      backupRef: cpfs-config-data-sync-group
+    - includedResourceTypes:
+        - configmaps
+      labelSelector: foundationservices.cloudpak.ibm.com=configmap
+      name: common-services-configmaps
+      restoreOverwriteResources: true
+      type: resource
+      backupRef: cpfs-config-data-sync-group
+  workflows:
+    - failOn: any-error
+      name: backup
+      sequence:
+        - group: cpfs-config-data-sync-group
+    - failOn: any-error
+      name: restore
+      sequence:
+        - group: commonservice-cr
+        - group: common-services-configmaps
+        - group: namespacescope
+        - group: operand-requests
+        - group: zenservice
+        
