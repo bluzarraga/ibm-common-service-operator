@@ -498,7 +498,8 @@ function wait_for_licensing_instance_deployment() {
         if [ -z "$ns" ]; then
             info "RETRYING: Waiting for Deployment ibm-licensing-service-instance to be ready (${retries} left)"
         else
-          break
+            info "Found licensing instance"
+            break
         fi
 
         ((retries--))
@@ -1043,6 +1044,12 @@ function cleanup_webhook() {
     info "Deleting ValidatingWebhookConfiguration..."
     ${OC} delete ValidatingWebhookConfiguration ibm-cs-ns-mapping-webhook-configuration --ignore-not-found
 
+}
+
+function cleanup_webhook_service() {
+    local control_ns=$1
+    info "Deleting ibm-common-service-webhook-service"
+    ${OC} delete service ibm-common-service-webhook -n $control_ns --ignore-not-found
 }
 
 # Clean up secretshare deployment and CR in service_ns
