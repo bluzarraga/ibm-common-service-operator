@@ -312,7 +312,7 @@ function wait_for_cscr_status(){
     local namespace=$1
     local name=$2
     local condition="${OC} -n ${namespace} get commonservice ${name} --no-headers --ignore-not-found -o jsonpath='{.status.phase}' | grep 'Succeeded'"
-    local retries=100
+    local retries=150
     local sleep_time=6
     local total_time_mins=$(( sleep_time * retries / 60))
     local wait_message="Waiting for CommonService CR ${name} in ${namespace} to be ready"
@@ -498,7 +498,8 @@ function wait_for_licensing_instance_deployment() {
         if [ -z "$ns" ]; then
             info "RETRYING: Waiting for Deployment ibm-licensing-service-instance to be ready (${retries} left)"
         else
-          break
+            info "Found licensing instance"
+            break
         fi
 
         ((retries--))
@@ -615,6 +616,28 @@ function get_catalogsource() {
         # Extracting the values using string manipulation
         catalog_source=$(echo "$result" | awk -F': ' '{print $2}' | awk -F',' '{print $1}')
         catalog_namespace=$(echo "$result" | awk -F': ' '{print $NF}')
+    elif [[ count -eq 2 ]]; then
+        # If there are two catalog sources, 
+        # case 1: "catalog_source_1" and "catalog_source_2", we return both of them
+        # case 2: "certified-operators" and "catalog_source_2", we only return "catalog_source_2"
+        # Split the result into lines
+        IFS=$'\n' read -rd '' -a lines <<< "$result"
+
+        for ((i = 0; i < ${#lines[@]}; i+=2)); do
+            name_line=${lines[$i]}
+            ns_line=${lines[$i+1]}
+            name=$(echo "$name_line" | awk -F': ' '{print $2}')
+            ns=$(echo "$ns_line" | awk -F': ' '{print $2}')
+            # If the catalog source is not "certified-operators", we use it
+            if [[ "$name" != "certified-operators" ]]; then
+                catalog_source=$name
+                catalog_namespace=$ns
+            else
+                # If the catalog source is "certified-operators", we skip it
+                count=1
+                continue
+            fi
+        done
     fi
     echo "$count $catalog_source $catalog_namespace"
 }
@@ -1043,6 +1066,12 @@ function cleanup_webhook() {
     info "Deleting ValidatingWebhookConfiguration..."
     ${OC} delete ValidatingWebhookConfiguration ibm-cs-ns-mapping-webhook-configuration --ignore-not-found
 
+}
+
+function cleanup_webhook_service() {
+    local control_ns=$1
+    info "Deleting ibm-common-service-webhook-service"
+    ${OC} delete service ibm-common-service-webhook -n $control_ns --ignore-not-found
 }
 
 # Clean up secretshare deployment and CR in service_ns
