@@ -19,7 +19,9 @@ metadata:
 {{- if .Values.global.instanceNamespace }}
   {{- $namespaces = append $namespaces .Values.global.instanceNamespace }}
 {{- end }}
-{{- $labels := .Values.cpfs.labels }}
+{{- if .Values.cpfs.labels }}
+  {{- $labels := .Values.cpfs.labels }}
+{{- end }}
 {{- range $i := $namespaces }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -29,8 +31,10 @@ metadata:
   namespace: {{ $i }}
   labels:
     component-id: {{ $chartName }}
-    {{- with $labels }}
-      {{- toYaml . | nindent 4 }}
+    {{- if .Values.cpfs.labels }}
+      {{- with $labels }}
+        {{- toYaml . | nindent 4 }}
+      {{- end }}
     {{- end }}
 roleRef: 
   kind: Role
@@ -49,8 +53,10 @@ metadata:
   namespace: {{ $i }}
   labels:
     component-id: {{ $chartName }}
-    {{- with $labels }}
-      {{- toYaml . | nindent 4 }}
+    {{- if .Values.cpfs.labels }}
+      {{- with $labels }}
+        {{- toYaml . | nindent 4 }}
+      {{- end }}
     {{- end }}
 rules:   
   - apiGroups: 
