@@ -66,6 +66,7 @@ spec:
       - lsr-cluster
       - lsr-chart
       - ibm-cm-chart
+      - ums
   snapshotMoveData: false
   storageLocation: <storage location name>
   ttl: 4h0m0s
